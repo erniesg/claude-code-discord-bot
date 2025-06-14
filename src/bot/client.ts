@@ -66,6 +66,12 @@ export class DiscordBot {
       message.channel && "name" in message.channel
         ? message.channel.name
         : "default";
+    
+    // Don't run in general channel
+    if (channelName === "general") {
+      return;
+    }
+    
     const sessionId = this.claudeManager.getSessionId(channelId);
 
     console.log(`Received message in channel: ${channelName} (${channelId})`);
