@@ -113,9 +113,11 @@ In your Discord server, create channels for each repository:
 # Start the bot
 bun run src/index.ts
 
-# Or for development with hot reload
-bun --hot src/index.ts
+# Or use the npm script
+bun start
 ```
+
+**Important**: Do not use hot reload (`bun --hot`) as it can cause issues with process management and spawn multiple Claude processes.
 
 You should see:
 ```
@@ -197,12 +199,14 @@ To modify the code:
 # Install dependencies
 bun install
 
-# Run with hot reload during development
-bun --hot src/index.ts
+# Run during development (restart manually after changes)
+bun start
 
 # Run tests
 bun test
 ```
+
+**Note**: Hot reload is not recommended for this bot as it can cause process management issues and spawn multiple Claude processes.
 
 ## License
 
