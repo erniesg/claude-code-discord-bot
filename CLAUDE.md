@@ -71,4 +71,4 @@ Required environment variables:
 
 ## Testing Notes
 
-- Use `bun run test` to run tests. Never use just `bun test`
+- Use `bun run test:run` to run tests. Never use just `bun test`

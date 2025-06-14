@@ -79,8 +79,14 @@ export class DiscordBot {
     console.log(`Existing session ID: ${sessionId || "none"}`);
 
     try {
+      // Check if we have an existing session
+      const isNewSession = !sessionId;
+      const statusMessage = isNewSession 
+        ? "🆕 Starting new Claude Code session..." 
+        : "🔄 Continuing existing Claude Code session...";
+      
       // Create initial Discord message
-      const reply = await message.channel.send("Starting Claude Code session...");
+      const reply = await message.channel.send(statusMessage);
       console.log("Created Discord message:", reply.id);
       this.claudeManager.setDiscordMessage(channelId, reply);
 

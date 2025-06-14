@@ -1,20 +1,45 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { ClaudeManager } from '../../src/claude/manager.js';
 import * as fs from 'fs';
+import * as path from 'path';
 
 vi.mock('fs');
 vi.mock('child_process');
 
+// Mock bun:sqlite first
+vi.mock('bun:sqlite', () => ({
+  Database: vi.fn()
+}));
+
+vi.mock('../../src/db/database.js', () => ({
+  DatabaseManager: vi.fn()
+}));
+
 describe('ClaudeManager', () => {
   let manager: ClaudeManager;
+  let mockDb: any;
   const mockBaseFolder = '/test/base';
 
-  beforeEach(() => {
-    manager = new ClaudeManager(mockBaseFolder);
+  beforeEach(async () => {
     vi.clearAllMocks();
+    
+    // Mock the DatabaseManager
+    const { DatabaseManager } = await import('../../src/db/database.js');
+    mockDb = {
+      getSession: vi.fn(),
+      setSession: vi.fn(),
+      clearSession: vi.fn(),
+      getAllSessions: vi.fn(),
+      cleanupOldSessions: vi.fn(),
+      close: vi.fn()
+    };
+    vi.mocked(DatabaseManager).mockImplementation(() => mockDb);
+    
+    manager = new ClaudeManager(mockBaseFolder);
   });
 
   afterEach(() => {
+    manager.destroy();
     vi.restoreAllMocks();
   });
 
@@ -61,7 +86,7 @@ describe('ClaudeManager', () => {
       manager.clearSession('channel-1');
       
       expect(manager.hasActiveProcess('channel-1')).toBe(false);
-      expect(manager.getSessionId('channel-1')).toBeUndefined();
+      expect(mockDb.clearSession).toHaveBeenCalledWith('channel-1');
     });
   });
 
@@ -74,7 +99,7 @@ describe('ClaudeManager', () => {
       const channelResponses = (manager as any).channelResponses;
       
       expect(channelMessages.get('channel-1')).toBe(mockMessage);
-      expect(channelResponses.get('channel-1')).toEqual([]);
+      expect(channelResponses.get('channel-1')).toEqual({ embeds: [], textContent: "" });
     });
   });
 
@@ -109,14 +134,16 @@ describe('ClaudeManager', () => {
 
   describe('getSessionId', () => {
     it('should return undefined when no session exists', () => {
+      mockDb.getSession.mockReturnValue(undefined);
       expect(manager.getSessionId('channel-1')).toBeUndefined();
+      expect(mockDb.getSession).toHaveBeenCalledWith('channel-1');
     });
 
     it('should return session ID when it exists', () => {
-      const channelSessions = (manager as any).channelSessions;
-      channelSessions.set('channel-1', 'session-123');
+      mockDb.getSession.mockReturnValue('session-123');
       
       expect(manager.getSessionId('channel-1')).toBe('session-123');
+      expect(mockDb.getSession).toHaveBeenCalledWith('channel-1');
     });
   });
 
@@ -156,6 +183,19 @@ describe('ClaudeManager', () => {
       
       expect(spawn).toHaveBeenCalledWith('/bin/bash', ['-c', expect.stringContaining('claude')], expect.any(Object));
       expect(mockProcess.stdin.end).toHaveBeenCalled();
+    });
+  });
+
+  describe('database integration', () => {
+    it('should initialize database and cleanup old sessions on construction', () => {
+      // The cleanupOldSessions call happens during construction, so we need to check
+      // if it was called when the manager was created in beforeEach
+      expect(mockDb.cleanupOldSessions).toHaveBeenCalled();
+    });
+
+    it('should close database on destroy', () => {
+      manager.destroy();
+      expect(mockDb.close).toHaveBeenCalled();
     });
   });
 });

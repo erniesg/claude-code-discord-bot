@@ -4,9 +4,10 @@ import * as fs from "fs";
 import { EmbedBuilder } from "discord.js";
 import type { SDKMessage } from "../types/index.js";
 import { buildClaudeCommand } from "../utils/shell.js";
+import { DatabaseManager } from "../db/database.js";
 
 export class ClaudeManager {
-  private channelSessions = new Map<string, string>();
+  private db: DatabaseManager;
   private channelMessages = new Map<string, any>();
   private channelResponses = new Map<string, { embeds: any[], textContent: string }>();
   private channelNames = new Map<string, string>();
@@ -19,7 +20,11 @@ export class ClaudeManager {
     }
   >();
 
-  constructor(private baseFolder: string) {}
+  constructor(private baseFolder: string) {
+    this.db = new DatabaseManager();
+    // Clean up old sessions on startup
+    this.db.cleanupOldSessions();
+  }
 
   hasActiveProcess(channelId: string): boolean {
     return this.channelProcesses.has(channelId);
@@ -35,7 +40,7 @@ export class ClaudeManager {
 
   clearSession(channelId: string): void {
     this.killActiveProcess(channelId);
-    this.channelSessions.delete(channelId);
+    this.db.clearSession(channelId);
     this.channelMessages.delete(channelId);
     this.channelResponses.delete(channelId);
     this.channelNames.delete(channelId);
@@ -70,7 +75,7 @@ export class ClaudeManager {
   }
 
   getSessionId(channelId: string): string | undefined {
-    return this.channelSessions.get(channelId);
+    return this.db.getSession(channelId);
   }
 
   async runClaudeCode(
@@ -161,7 +166,8 @@ export class ClaudeManager {
               this.channelProcesses.delete(channelId);
             } else if (parsed.type === "system") {
               console.log("System message:", parsed.subtype);
-              this.channelSessions.set(channelId, parsed.session_id);
+              const channelName = this.channelNames.get(channelId) || "default";
+              this.db.setSession(channelId, parsed.session_id, channelName);
             }
           } catch (error) {
             console.error("Error parsing JSON:", error, "Line:", line);
@@ -253,7 +259,8 @@ export class ClaudeManager {
     // If there's text content, add it to textContent
     if (content && content.trim()) {
       currentResponses.textContent += (currentResponses.textContent ? "\n\n" : "") + content;
-      this.channelSessions.set(channelId, parsed.session_id);
+      const channelName = this.channelNames.get(channelId) || "default";
+      this.db.setSession(channelId, parsed.session_id, channelName);
       this.channelResponses.set(channelId, currentResponses);
       this.updateDiscordMessage(channelId);
     }
@@ -297,7 +304,8 @@ export class ClaudeManager {
         currentResponses.embeds = currentResponses.embeds.slice(-10);
       }
 
-      this.channelSessions.set(channelId, parsed.session_id);
+      const channelName = this.channelNames.get(channelId) || "default";
+      this.db.setSession(channelId, parsed.session_id, channelName);
       this.channelResponses.set(channelId, currentResponses);
       this.updateDiscordMessage(channelId);
     }
@@ -308,7 +316,8 @@ export class ClaudeManager {
     parsed: SDKMessage & { type: "result" }
   ): void {
     console.log("Result message:", parsed);
-    this.channelSessions.set(channelId, parsed.session_id);
+    const channelName = this.channelNames.get(channelId) || "default";
+    this.db.setSession(channelId, parsed.session_id, channelName);
 
     const currentResponses = this.channelResponses.get(channelId) || { embeds: [], textContent: "" };
 
@@ -387,5 +396,16 @@ export class ClaudeManager {
         hasTextContent: !!(responses?.textContent),
       });
     }
+  }
+
+  // Clean up resources
+  destroy(): void {
+    // Close all active processes
+    for (const [channelId] of this.channelProcesses) {
+      this.killActiveProcess(channelId);
+    }
+    
+    // Close database connection
+    this.db.close();
   }
 }
