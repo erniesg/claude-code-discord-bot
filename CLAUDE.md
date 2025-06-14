@@ -9,7 +9,7 @@ This project uses **Bun** as the JavaScript runtime instead of Node.js. Always u
 - `bun install` - Install dependencies
 - `bun run index.ts` - Run the main application
 - `bun --hot ./index.ts` - Run with hot reload for development
-- `bun test` - Run tests (instead of jest/vitest)
+- `bun run test` - Run tests (instead of jest/vitest)
 - `bun build <file>` - Build files (instead of webpack/esbuild)
 
 ## Architecture
@@ -68,3 +68,7 @@ Required environment variables:
 
 - Never run the bot. You are not allowed to use the `bun run src/index.ts` command. 
 - You can run tests, but never run the main application.
+
+## Testing Notes
+
+- Use `bun run test` to run tests. Never use just `bun test`

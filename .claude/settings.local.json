@@ -4,7 +4,9 @@
       "Bash(bun add:*)",
       "Bash(mkdir:*)",
       "Bash(bun install:*)",
-      "Bash(bun run:*)"
+      "Bash(bun run:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
     ],
     "deny": []
   }
