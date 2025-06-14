@@ -4,14 +4,18 @@
   "type": "module",
   "private": true,
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "vitest": "^2.1.8",
+    "@types/node": "^22.0.0"
   },
   "peerDependencies": {
     "typescript": "^5"
   },
   "scripts": {
     "start": "bun run src/index.ts",
-    "dev": "bun --hot src/index.ts"
+    "dev": "bun --hot src/index.ts",
+    "test": "vitest",
+    "test:run": "vitest run"
   },
   "dependencies": {
     "discord.js": "^14.19.3"
