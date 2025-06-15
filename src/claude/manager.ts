@@ -10,6 +10,7 @@ export class ClaudeManager {
   private db: DatabaseManager;
   private channelMessages = new Map<string, any>();
   private channelResponses = new Map<string, { embeds: any[], textContent: string }>();
+  private channelToolCalls = new Map<string, Map<string, any>>();
   private channelNames = new Map<string, string>();
   private channelProcesses = new Map<
     string,
@@ -43,6 +44,7 @@ export class ClaudeManager {
     this.db.clearSession(channelId);
     this.channelMessages.delete(channelId);
     this.channelResponses.delete(channelId);
+    this.channelToolCalls.delete(channelId);
     this.channelNames.delete(channelId);
     this.channelProcesses.delete(channelId);
   }
@@ -50,6 +52,7 @@ export class ClaudeManager {
   setDiscordMessage(channelId: string, message: any): void {
     this.channelMessages.set(channelId, message);
     this.channelResponses.set(channelId, { embeds: [], textContent: "" });
+    this.channelToolCalls.set(channelId, new Map());
   }
 
   reserveChannel(
@@ -145,8 +148,18 @@ export class ClaudeManager {
     }, 5 * 60 * 1000); // 5 minutes
 
     claude.stdout.on("data", (data) => {
-      console.log("Raw stdout data:", data.toString());
-      buffer += data.toString();
+      const rawData = data.toString();
+      console.log("Raw stdout data:", rawData);
+      
+      // Log all streamed output to log.txt
+      try {
+        fs.appendFileSync(path.join(process.cwd(), 'log.txt'), 
+          `[${new Date().toISOString()}] Channel: ${channelId}\n${rawData}\n---\n`);
+      } catch (error) {
+        console.error("Error writing to log.txt:", error);
+      }
+      
+      buffer += rawData;
       const lines = buffer.split("\n");
       buffer = lines.pop() || "";
 
@@ -159,6 +172,8 @@ export class ClaudeManager {
 
             if (parsed.type === "assistant" && parsed.message.content) {
               this.handleAssistantMessage(channelId, parsed);
+            } else if (parsed.type === "user" && parsed.message.content) {
+              this.handleToolResultMessage(channelId, parsed);
             } else if (parsed.type === "result") {
               this.handleResultMessage(channelId, parsed);
               clearTimeout(timeout);
@@ -166,6 +181,9 @@ export class ClaudeManager {
               this.channelProcesses.delete(channelId);
             } else if (parsed.type === "system") {
               console.log("System message:", parsed.subtype);
+              if (parsed.subtype === "init") {
+                this.handleInitMessage(channelId, parsed);
+              }
               const channelName = this.channelNames.get(channelId) || "default";
               this.db.setSession(channelId, parsed.session_id, channelName);
             }
@@ -238,6 +256,19 @@ export class ClaudeManager {
     });
   }
 
+  private handleInitMessage(channelId: string, parsed: any): void {
+    const currentResponses = this.channelResponses.get(channelId) || { embeds: [], textContent: "" };
+    
+    const initEmbed = new EmbedBuilder()
+      .setTitle("🚀 Claude Code Session Started")
+      .setDescription(`**Working Directory:** ${parsed.cwd}\n**Model:** ${parsed.model}\n**Tools:** ${parsed.tools.length} available`)
+      .setColor(0x00FF00); // Green for init
+    
+    currentResponses.embeds.push(initEmbed);
+    this.channelResponses.set(channelId, currentResponses);
+    this.updateDiscordMessage(channelId);
+  }
+
   private handleAssistantMessage(
     channelId: string,
     parsed: SDKMessage & { type: "assistant" }
@@ -246,29 +277,27 @@ export class ClaudeManager {
       ? parsed.message.content.find((c: any) => c.type === "text")?.text || ""
       : parsed.message.content;
 
-    console.log("Assistant content:", content);
-
     // Check for tool use in the message
     const toolUses = Array.isArray(parsed.message.content)
       ? parsed.message.content.filter((c: any) => c.type === "tool_use")
       : [];
 
     const currentResponses = this.channelResponses.get(channelId) || { embeds: [], textContent: "" };
+    const toolCalls = this.channelToolCalls.get(channelId) || new Map();
 
-    // If there's text content, add it to textContent
+    // If there's text content, create an assistant message embed
     if (content && content.trim()) {
-      currentResponses.textContent += (currentResponses.textContent ? "\n\n" : "") + content;
-      const channelName = this.channelNames.get(channelId) || "default";
-      this.db.setSession(channelId, parsed.session_id, channelName);
-      this.channelResponses.set(channelId, currentResponses);
-      this.updateDiscordMessage(channelId);
+      const assistantEmbed = new EmbedBuilder()
+        .setTitle("💬 Claude")
+        .setDescription(content)
+        .setColor(0x7289DA); // Discord blurple
+      
+      currentResponses.embeds.push(assistantEmbed);
     }
     
-    // If there are tool uses, create blue embeds for each
+    // If there are tool uses, create embeds for each and track them
     if (toolUses.length > 0) {
       toolUses.forEach((tool: any) => {
-        console.log(tool);
-
         let toolMessage = `🔧 ${tool.name}`;
 
         if (tool.input && Object.keys(tool.input).length > 0) {
@@ -292,22 +321,66 @@ export class ClaudeManager {
         }
 
         const toolEmbed = new EmbedBuilder()
-          .setDescription(toolMessage)
+          .setDescription(`⏳ ${toolMessage}`)
           .setColor(0x0099FF); // Blue for tool calls
 
         currentResponses.embeds.push(toolEmbed);
+        
+        // Track this tool call for later updating
+        toolCalls.set(tool.id, {
+          embed: toolEmbed,
+          embedIndex: currentResponses.embeds.length - 1
+        });
       });
-
-      // Keep only last 10 embeds to avoid hitting Discord limits
-      if (currentResponses.embeds.length > 10) {
-        currentResponses.embeds = currentResponses.embeds.slice(-10);
-      }
-
-      const channelName = this.channelNames.get(channelId) || "default";
-      this.db.setSession(channelId, parsed.session_id, channelName);
-      this.channelResponses.set(channelId, currentResponses);
-      this.updateDiscordMessage(channelId);
     }
+
+    // Keep only last 10 embeds to avoid hitting Discord limits
+    if (currentResponses.embeds.length > 10) {
+      currentResponses.embeds = currentResponses.embeds.slice(-10);
+    }
+
+    const channelName = this.channelNames.get(channelId) || "default";
+    this.db.setSession(channelId, parsed.session_id, channelName);
+    this.channelResponses.set(channelId, currentResponses);
+    this.channelToolCalls.set(channelId, toolCalls);
+    this.updateDiscordMessage(channelId);
+  }
+
+  private handleToolResultMessage(channelId: string, parsed: any): void {
+    const toolResults = Array.isArray(parsed.message.content)
+      ? parsed.message.content.filter((c: any) => c.type === "tool_result")
+      : [];
+
+    if (toolResults.length === 0) return;
+
+    const currentResponses = this.channelResponses.get(channelId) || { embeds: [], textContent: "" };
+    const toolCalls = this.channelToolCalls.get(channelId) || new Map();
+
+    toolResults.forEach((result: any) => {
+      const toolCall = toolCalls.get(result.tool_use_id);
+      if (toolCall) {
+        // Get the first line of the result
+        const firstLine = result.content.split('\n')[0].trim();
+        const resultText = firstLine.length > 100 
+          ? firstLine.substring(0, 100) + "..."
+          : firstLine;
+        
+        // Update the existing tool embed with the result
+        const originalDescription = toolCall.embed.data.description.replace("⏳", "✅");
+        const isError = result.is_error === true;
+        
+        if (isError) {
+          toolCall.embed.setDescription(`❌ ${originalDescription.substring(2)}\n*${resultText}*`);
+          toolCall.embed.setColor(0xFF0000); // Red for errors
+        } else {
+          toolCall.embed.setDescription(`${originalDescription}\n*${resultText}*`);
+          toolCall.embed.setColor(0x00FF00); // Green for completed
+        }
+      }
+    });
+
+    this.channelResponses.set(channelId, currentResponses);
+    this.updateDiscordMessage(channelId);
   }
 
   private handleResultMessage(
@@ -320,35 +393,26 @@ export class ClaudeManager {
 
     const currentResponses = this.channelResponses.get(channelId) || { embeds: [], textContent: "" };
 
-    // If no text content was captured, use the result directly (only for success)
-    if (
-      !currentResponses.textContent &&
-      parsed.subtype === "success" &&
-      "result" in parsed
-    ) {
-      currentResponses.textContent = parsed.result;
-    }
-
-    // Create a yellow embed for the final result
-    const resultEmbed = new EmbedBuilder()
-      .setColor(0xFFD700); // Yellow for final result
+    // Create a final result embed
+    const resultEmbed = new EmbedBuilder();
 
     if (parsed.subtype === "success") {
-      let description = currentResponses.textContent || "Task completed";
-      // Add turn count at the end
+      let description = "result" in parsed ? parsed.result : "Task completed";
       description += `\n\n*Completed in ${parsed.num_turns} turns*`;
       
       resultEmbed
-        .setTitle("✅ Completed")
-        .setDescription(description);
+        .setTitle("✅ Session Complete")
+        .setDescription(description)
+        .setColor(0x00FF00); // Green for success
     } else {
       resultEmbed
-        .setTitle("❌ Error")
-        .setDescription(`Task failed: ${parsed.subtype}`);
+        .setTitle("❌ Session Failed")
+        .setDescription(`Task failed: ${parsed.subtype}`)
+        .setColor(0xFF0000); // Red for failure
     }
 
     currentResponses.embeds.push(resultEmbed);
-    // Clear text content since it's now in the completion embed
+    // Clear text content - we only want embeds
     currentResponses.textContent = "";
     this.channelResponses.set(channelId, currentResponses);
     this.updateDiscordMessage(channelId);
@@ -361,25 +425,24 @@ export class ClaudeManager {
     const message = this.channelMessages.get(channelId);
     const responses = this.channelResponses.get(channelId);
 
-    if (message && responses && (responses.embeds.length > 0 || responses.textContent)) {
+    if (message && responses) {
       try {
         const messageOptions: any = {
-          allowedMentions: { parse: [] }
+          allowedMentions: { parse: [] },
+          content: "" // Always empty - we only want embeds
         };
-
-        // Only show text content if we don't have any embeds (during processing)
-        if (responses.textContent && responses.embeds.length === 0) {
-          const truncatedContent = responses.textContent.length > 2000 
-            ? responses.textContent.substring(0, 1900) + "..." 
-            : responses.textContent;
-          messageOptions.content = truncatedContent;
-        } else if (responses.embeds.length === 0) {
-          messageOptions.content = "Processing...";
-        }
 
         // Add embeds if present (Discord limit is 10 embeds per message)
         if (responses.embeds.length > 0) {
           messageOptions.embeds = responses.embeds.slice(-10);
+        } else {
+          // Show processing embed if no embeds yet
+          messageOptions.embeds = [
+            new EmbedBuilder()
+              .setTitle("⏳ Processing...")
+              .setDescription("Claude Code is starting up")
+              .setColor(0xFFD700)
+          ];
         }
 
         console.log("Updating Discord message with embeds:", responses.embeds.length);
@@ -392,7 +455,6 @@ export class ClaudeManager {
         hasMessage: !!message,
         hasResponses: !!responses,
         embedsLength: responses?.embeds?.length || 0,
-        hasTextContent: !!(responses?.textContent),
       });
     }
   }
