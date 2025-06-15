@@ -2,6 +2,24 @@
 
 A Discord bot that runs Claude Code sessions on different projects based on Discord channel names. Each channel maps to a folder in your file system, allowing you to interact with Claude Code for different repositories through Discord.
 
+## Quickstart
+
+1. Install [Bun](https://bun.sh/) and [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)
+2. Create a Discord bot at [Discord Developer Portal](https://discord.com/developers/applications)
+3. Clone and setup:
+   ```bash
+   git clone <repository-url>
+   cd claude-code-discord
+   bun install
+   ```
+4. Create `.env` file:
+   ```env
+   DISCORD_TOKEN=your_discord_bot_token_here
+   ALLOWED_USER_ID=your_discord_user_id_here
+   BASE_FOLDER=/path/to/your/repos
+   ```
+5. Run: `bun start`
+
 ## Features
 
 - **Channel-based project mapping**: Each Discord channel corresponds to a folder (e.g., `#my-project` → `/path/to/repos/my-project`)
@@ -9,12 +27,6 @@ A Discord bot that runs Claude Code sessions on different projects based on Disc
 - **Real-time streaming**: See Claude Code's tool usage and responses as they happen
 - **Activity logging**: Shows up to 20 lines of activity including tool calls with parameters
 - **Slash commands**: Use `/clear` to reset a session
-
-## Prerequisites
-
-- [Bun](https://bun.sh/) installed on your system
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and configured
-- A Discord account and server where you have administrative permissions
 
 ## Setup Instructions
 
@@ -127,86 +139,31 @@ Successfully registered application commands.
 
 ## Usage
 
-### Basic Usage
-
-1. Go to any channel that corresponds to a repository folder
-2. Type any message - this will prompt Claude Code with your message
-3. The bot will create a "Starting Claude Code session..." message
-4. Watch as the message updates with Claude's tool usage and responses
-5. See the final completion status when done
+Type any message in a channel that corresponds to a repository folder. The bot will run Claude Code with your message as the prompt and stream the results.
 
 ### Commands
 
 - **Any message**: Runs Claude Code with your message as the prompt
 - **/clear**: Resets the current channel's session (starts fresh next time)
 
-### Example Interaction
+### Example
 
 ```
 You: hello
 Bot: 🔧 LS (path: .)
      🔧 Read (file_path: ./package.json)
-     🔧 Read (file_path: ./README.md)
      Hello! I can see this is a Node.js project. What would you like to work on?
      ✅ Completed (3 turns)
 ```
 
 ## How It Works
 
-- **Channel Mapping**: `#my-project` channel → `/path/to/repos/my-project` folder
-- **Session Persistence**: Each channel maintains its own Claude Code session
-- **Activity Logging**: Shows up to 20 lines of activity with FIFO behavior
-- **Tool Visibility**: See exactly what tools Claude is using and with what parameters
-- **Path Simplification**: Full paths are shortened to relative paths (e.g., `./index.ts` instead of `/full/path/to/index.ts`)
+- Each Discord channel maps to a folder: `#my-project` → `/path/to/repos/my-project`
+- Sessions persist per channel and automatically resume
+- Shows real-time tool usage and responses
+- Only responds to the configured `ALLOWED_USER_ID`
 
-## Security Notes
-
-- **Private Server Recommended**: Use a private Discord server for your repositories to avoid exposing project details
-- **User Restriction**: Only the configured `ALLOWED_USER_ID` can interact with the bot
-- **Environment Variables**: Keep your `.env` file secure and never commit it to version control
-- **Bot Token**: Keep your Discord bot token secure - treat it like a password
-
-## Troubleshooting
-
-### Bot doesn't respond
-- Check that the bot has proper permissions in the channel
-- Verify your `ALLOWED_USER_ID` is correct
-- Check the console for error messages
-
-### "Working directory does not exist" error
-- Ensure the folder exists: `/path/to/repos/channel-name`
-- Check that `BASE_FOLDER` in `.env` is correct
-- Verify folder names match Discord channel names exactly
-
-### Session not persisting
-- Sessions are stored in memory and reset when the bot restarts
-- Use `/clear` if you want to intentionally reset a session
-
-### Rate limiting
-- Discord has rate limits for message editing
-- The bot handles this automatically, but very rapid Claude responses might be delayed
-
-## Development
-
-This project uses:
-- **Bun** as the JavaScript runtime
-- **TypeScript** with strict type checking
-- **discord.js** for Discord API interaction
-- **Claude Code CLI** for AI interactions
-
-To modify the code:
-```bash
-# Install dependencies
-bun install
-
-# Run during development (restart manually after changes)
-bun start
-
-# Run tests
-bun test
-```
-
-**Note**: Hot reload is not recommended for this bot as it can cause process management issues and spawn multiple Claude processes.
+For detailed setup instructions, troubleshooting, and development information, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
