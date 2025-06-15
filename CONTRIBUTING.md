@@ -3,12 +3,14 @@
 ## Development
 
 This project uses:
+
 - **Bun** as the JavaScript runtime
 - **TypeScript** with strict type checking
 - **discord.js** for Discord API interaction
 - **Claude Code CLI** for AI interactions
 
 To modify the code:
+
 ```bash
 # Install dependencies
 bun install
@@ -32,19 +34,18 @@ bun test
 ## Troubleshooting
 
 ### Bot doesn't respond
+
 - Check that the bot has proper permissions in the channel
 - Verify your `ALLOWED_USER_ID` is correct
 - Check the console for error messages
 
 ### "Working directory does not exist" error
+
 - Ensure the folder exists: `/path/to/repos/channel-name`
 - Check that `BASE_FOLDER` in `.env` is correct
 - Verify folder names match Discord channel names exactly
 
 ### Session not persisting
+
 - Sessions are stored in memory and reset when the bot restarts
 - Use `/clear` if you want to intentionally reset a session
-
-### Rate limiting
-- Discord has rate limits for message editing
-- The bot handles this automatically, but very rapid Claude responses might be delayed
