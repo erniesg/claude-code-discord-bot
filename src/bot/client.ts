@@ -4,10 +4,12 @@ import {
 } from "discord.js";
 import type { ClaudeManager } from '../claude/manager.js';
 import { CommandHandler } from './commands.js';
+import type { MCPPermissionServer } from '../mcp/server.js';
 
 export class DiscordBot {
-  private client: Client;
+  public client: Client; // Make public so MCP server can access it
   private commandHandler: CommandHandler;
+  private mcpServer?: MCPPermissionServer;
 
   constructor(
     private claudeManager: ClaudeManager,
@@ -18,11 +20,19 @@ export class DiscordBot {
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildMessageReactions, // Add reactions for approval
       ],
     });
 
     this.commandHandler = new CommandHandler(claudeManager, allowedUserId);
     this.setupEventHandlers();
+  }
+
+  /**
+   * Set the MCP server for handling approval reactions
+   */
+  setMCPServer(mcpServer: MCPPermissionServer): void {
+    this.mcpServer = mcpServer;
   }
 
   private setupEventHandlers(): void {
@@ -41,6 +51,38 @@ export class DiscordBot {
     this.client.on("messageCreate", async (message) => {
       await this.handleMessage(message);
     });
+
+    // Handle reactions for MCP approval
+    this.client.on("messageReactionAdd", async (reaction, user) => {
+      await this.handleReactionAdd(reaction, user);
+    });
+  }
+
+  /**
+   * Handle reaction add events for MCP approval
+   */
+  private async handleReactionAdd(reaction: any, user: any): Promise<void> {
+    // Ignore bot reactions
+    if (user.bot) return;
+
+    // Only process reactions from the authorized user
+    if (user.id !== this.allowedUserId) return;
+
+    // Only process ✅ and ❌ reactions
+    if (reaction.emoji.name !== '✅' && reaction.emoji.name !== '❌') return;
+
+    console.log(`Discord: Reaction ${reaction.emoji.name} by ${user.id} on message ${reaction.message.id}`);
+
+    // Pass to MCP server if available
+    if (this.mcpServer) {
+      const approved = reaction.emoji.name === '✅';
+      this.mcpServer.getPermissionManager().handleApprovalReaction(
+        reaction.message.channelId,
+        reaction.message.id,
+        user.id,
+        approved
+      );
+    }
   }
 
   private async handleMessage(message: any): Promise<void> {
@@ -90,9 +132,17 @@ export class DiscordBot {
       console.log("Created Discord message:", reply.id);
       this.claudeManager.setDiscordMessage(channelId, reply);
 
+      // Create Discord context for MCP server
+      const discordContext = {
+        channelId: channelId,
+        channelName: channelName,
+        userId: message.author.id,
+        messageId: message.id,
+      };
+
       // Reserve the channel and run Claude Code
       this.claudeManager.reserveChannel(channelId, sessionId, reply);
-      await this.claudeManager.runClaudeCode(channelId, channelName, message.content, sessionId);
+      await this.claudeManager.runClaudeCode(channelId, channelName, message.content, sessionId, discordContext);
     } catch (error) {
       console.error("Error running Claude Code:", error);
       

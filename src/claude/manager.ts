@@ -3,7 +3,7 @@ import * as path from "path";
 import * as fs from "fs";
 import { EmbedBuilder } from "discord.js";
 import type { SDKMessage } from "../types/index.js";
-import { buildClaudeCommand } from "../utils/shell.js";
+import { buildClaudeCommand, type DiscordContext } from "../utils/shell.js";
 import { DatabaseManager } from "../db/database.js";
 
 export class ClaudeManager {
@@ -82,7 +82,8 @@ export class ClaudeManager {
     channelId: string,
     channelName: string,
     prompt: string,
-    sessionId?: string
+    sessionId?: string,
+    discordContext?: DiscordContext
   ): Promise<void> {
     // Store the channel name for path replacement
     this.channelNames.set(channelId, channelName);
@@ -94,7 +95,7 @@ export class ClaudeManager {
       throw new Error(`Working directory does not exist: ${workingDir}`);
     }
 
-    const commandString = buildClaudeCommand(workingDir, prompt, sessionId);
+    const commandString = buildClaudeCommand(workingDir, prompt, sessionId, discordContext);
     console.log(`Running command: ${commandString}`);
 
     const claude = spawn("/bin/bash", ["-c", commandString], {
@@ -126,7 +127,6 @@ export class ClaudeManager {
     });
 
     let buffer = "";
-    const responses: string[] = [];
 
     // Set a timeout for the Claude process (5 minutes)
     const timeout = setTimeout(() => {
@@ -158,7 +158,7 @@ export class ClaudeManager {
             console.log("Parsed message type:", parsed.type);
 
             if (parsed.type === "assistant" && parsed.message.content) {
-              this.handleAssistantMessage(channelId, parsed, responses);
+              this.handleAssistantMessage(channelId, parsed);
             } else if (parsed.type === "result") {
               this.handleResultMessage(channelId, parsed);
               clearTimeout(timeout);
@@ -240,8 +240,7 @@ export class ClaudeManager {
 
   private handleAssistantMessage(
     channelId: string,
-    parsed: SDKMessage & { type: "assistant" },
-    responses: string[]
+    parsed: SDKMessage & { type: "assistant" }
   ): void {
     const content = Array.isArray(parsed.message.content)
       ? parsed.message.content.find((c: any) => c.type === "text")?.text || ""
