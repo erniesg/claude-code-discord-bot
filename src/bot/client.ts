@@ -1,6 +1,7 @@
 import {
   Client,
   GatewayIntentBits,
+  EmbedBuilder,
 } from "discord.js";
 import type { ClaudeManager } from '../claude/manager.js';
 import { CommandHandler } from './commands.js';
@@ -123,12 +124,23 @@ export class DiscordBot {
     try {
       // Check if we have an existing session
       const isNewSession = !sessionId;
-      const statusMessage = isNewSession 
-        ? "🆕 Starting new Claude Code session..." 
-        : "🔄 Continuing existing Claude Code session...";
+      
+      // Create status embed
+      const statusEmbed = new EmbedBuilder()
+        .setColor(0xFFD700); // Yellow for startup
+      
+      if (isNewSession) {
+        statusEmbed
+          .setTitle("🆕 Starting New Session")
+          .setDescription("Initializing Claude Code...");
+      } else {
+        statusEmbed
+          .setTitle("🔄 Continuing Session")
+          .setDescription(`**Session ID:** ${sessionId}\nResuming Claude Code...`);
+      }
       
       // Create initial Discord message
-      const reply = await message.channel.send(statusMessage);
+      const reply = await message.channel.send({ embeds: [statusEmbed] });
       console.log("Created Discord message:", reply.id);
       this.claudeManager.setDiscordMessage(channelId, reply);
 
