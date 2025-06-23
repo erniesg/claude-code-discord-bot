@@ -23,6 +23,7 @@ export class ClaudeManager {
   private channelMappings: Record<string, string> = {};
   private contentSummarizer: ContentSummarizer;
   private toolSummaries = new Map<string, Map<string, any>>(); // channelId -> toolId -> summary
+  private jsonBuffers = new Map<string, string>(); // channelId -> incomplete JSON buffer
 
   constructor(private baseFolder: string) {
     this.db = new DatabaseManager();
@@ -53,6 +54,7 @@ export class ClaudeManager {
     this.channelNames.delete(channelId);
     this.channelProcesses.delete(channelId);
     this.toolSummaries.delete(channelId);
+    this.jsonBuffers.delete(channelId);
   }
 
   setDiscordMessage(channelId: string, message: any): void {
@@ -188,39 +190,9 @@ export class ClaudeManager {
       }
       
       buffer += rawData;
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-
-      for (const line of lines) {
-        if (line.trim()) {
-          console.log("Processing line:", line);
-          try {
-            const parsed: SDKMessage = JSON.parse(line);
-            console.log("Parsed message type:", parsed.type);
-
-            if (parsed.type === "assistant" && parsed.message.content) {
-              this.handleAssistantMessage(channelId, parsed).catch(console.error);
-            } else if (parsed.type === "user" && parsed.message.content) {
-              this.handleToolResultMessage(channelId, parsed).catch(console.error);
-            } else if (parsed.type === "result") {
-              this.handleResultMessage(channelId, parsed).then(() => {
-                clearTimeout(timeout);
-                claude.kill("SIGTERM");
-                this.channelProcesses.delete(channelId);
-              }).catch(console.error);
-            } else if (parsed.type === "system") {
-              console.log("System message:", parsed.subtype);
-              if (parsed.subtype === "init") {
-                this.handleInitMessage(channelId, parsed).catch(console.error);
-              }
-              const channelName = this.channelNames.get(channelId) || "default";
-              this.db.setSession(channelId, parsed.session_id, channelName);
-            }
-          } catch (error) {
-            console.error("Error parsing JSON:", error, "Line:", line);
-          }
-        }
-      }
+      
+      // Process complete JSON messages
+      this.processCompleteJsonMessages(channelId, buffer, timeout, claude);
     });
 
     claude.on("close", (code) => {
@@ -506,6 +478,194 @@ export class ClaudeManager {
     }
 
     console.log("Got result message, cleaning up process tracking");
+  }
+
+  /**
+   * Process complete JSON messages from Claude Code stream
+   */
+  private processCompleteJsonMessages(channelId: string, buffer: string, timeout: any, claude: any): void {
+    const existingBuffer = this.jsonBuffers.get(channelId) || '';
+    const fullBuffer = existingBuffer + buffer;
+    
+    const lines = fullBuffer.split('\n');
+    let remainingBuffer = '';
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      
+      try {
+        // Try to parse as complete JSON
+        const parsed: SDKMessage = JSON.parse(line);
+        console.log("Parsed message type:", parsed.type);
+        
+        // Successfully parsed - process the message
+        if (parsed.type === "assistant" && parsed.message.content) {
+          this.handleLargeAssistantMessage(channelId, parsed).catch(console.error);
+        } else if (parsed.type === "user" && parsed.message.content) {
+          this.handleToolResultMessage(channelId, parsed).catch(console.error);
+        } else if (parsed.type === "result") {
+          this.handleResultMessage(channelId, parsed).then(() => {
+            clearTimeout(timeout);
+            claude.kill("SIGTERM");
+            this.channelProcesses.delete(channelId);
+          }).catch(console.error);
+        } else if (parsed.type === "system") {
+          console.log("System message:", parsed.subtype);
+          if (parsed.subtype === "init") {
+            this.handleInitMessage(channelId, parsed).catch(console.error);
+          }
+          const channelName = this.channelNames.get(channelId) || "default";
+          this.db.setSession(channelId, parsed.session_id, channelName);
+        }
+        
+      } catch (error) {
+        // If this is the last line and it's incomplete, keep it in buffer
+        if (i === lines.length - 1) {
+          remainingBuffer = line;
+          console.log(`Buffering incomplete JSON (${line.length} chars): ${line.substring(0, 100)}...`);
+        } else {
+          // Error parsing a complete line - log it
+          console.error("Error parsing JSON:", error.message);
+          console.log("Problematic line (first 200 chars):", line.substring(0, 200));
+        }
+      }
+    }
+    
+    // Update buffer with any remaining incomplete JSON
+    this.jsonBuffers.set(channelId, remainingBuffer);
+  }
+
+  /**
+   * Handle assistant messages with large content detection
+   */
+  private async handleLargeAssistantMessage(
+    channelId: string,
+    parsed: SDKMessage & { type: "assistant" }
+  ): Promise<void> {
+    // Check if any tool_use has very large content that might cause issues
+    const content = Array.isArray(parsed.message.content)
+      ? parsed.message.content.find((c: any) => c.type === "text")?.text || ""
+      : parsed.message.content;
+
+    const toolUses = Array.isArray(parsed.message.content)
+      ? parsed.message.content.filter((c: any) => c.type === "tool_use")
+      : [];
+
+    // Check for oversized tool operations
+    const hasLargeToolContent = toolUses.some((tool: any) => {
+      const inputStr = JSON.stringify(tool.input || {});
+      return inputStr.length > 50000; // 50KB threshold for tool input
+    });
+
+    if (hasLargeToolContent) {
+      console.log("Detected large tool content, using smart processing");
+      // Handle large tool operations specially
+      await this.handleLargeToolOperations(channelId, parsed, toolUses);
+    } else {
+      // Normal processing
+      await this.handleAssistantMessage(channelId, parsed);
+    }
+  }
+
+  /**
+   * Handle tool operations with large content
+   */
+  private async handleLargeToolOperations(
+    channelId: string,
+    parsed: SDKMessage & { type: "assistant" },
+    toolUses: any[]
+  ): Promise<void> {
+    const channel = this.channelMessages.get(channelId)?.channel;
+    if (!channel) return;
+
+    const content = Array.isArray(parsed.message.content)
+      ? parsed.message.content.find((c: any) => c.type === "text")?.text || ""
+      : parsed.message.content;
+
+    const toolCalls = this.channelToolCalls.get(channelId) || new Map();
+
+    try {
+      // Send assistant text if present
+      if (content && content.trim()) {
+        await this.handleAssistantMessage(channelId, parsed);
+      }
+      
+      // Handle each large tool operation
+      for (const tool of toolUses) {
+        const inputSize = JSON.stringify(tool.input || {}).length;
+        
+        if (inputSize > 50000) {
+          // Generate smart summary for large tool operation
+          const toolSummary = this.contentSummarizer.generateToolSummary(
+            tool.name,
+            tool.input,
+            `Large ${tool.name} operation (${Math.round(inputSize/1024)}KB)`,
+            false
+          );
+          
+          const toolEmbed = new EmbedBuilder()
+            .setTitle("🔧 Large Operation")
+            .setDescription(`⏳ ${toolSummary.summary}`)
+            .setColor(0x0099FF);
+
+          // Create content viewing buttons
+          const buttons = this.contentSummarizer.createContentButtons(
+            tool.id,
+            true
+          );
+
+          const messagePayload: any = { embeds: [toolEmbed] };
+          if (buttons) {
+            messagePayload.components = [buttons];
+          }
+
+          const sentMessage = await channel.send(messagePayload);
+
+          // Store tool summary for button interactions
+          this.storeToolSummary(channelId, tool.id, {
+            ...toolSummary,
+            details: JSON.stringify(tool.input, null, 2) // Store formatted input
+          });
+
+          // Track this tool call
+          toolCalls.set(tool.id, {
+            message: sentMessage,
+            toolId: tool.id,
+            toolName: tool.name,
+            input: { large_content: true, size_kb: Math.round(inputSize/1024) }
+          });
+        } else {
+          // Normal tool processing
+          let toolMessage = `🔧 ${tool.name}`;
+          if (tool.input && Object.keys(tool.input).length > 0) {
+            const inputs = Object.entries(tool.input)
+              .map(([key, value]) => `${key}=${String(value).substring(0, 50)}${String(value).length > 50 ? '...' : ''}`)
+              .join(", ");
+            toolMessage += ` (${inputs})`;
+          }
+
+          const toolEmbed = new EmbedBuilder()
+            .setDescription(`⏳ ${toolMessage}`)
+            .setColor(0x0099FF);
+
+          const sentMessage = await channel.send({ embeds: [toolEmbed] });
+          
+          toolCalls.set(tool.id, {
+            message: sentMessage,
+            toolId: tool.id,
+            toolName: tool.name,
+            input: tool.input
+          });
+        }
+      }
+
+      const channelName = this.channelNames.get(channelId) || "default";
+      this.db.setSession(channelId, parsed.session_id, channelName);
+      this.channelToolCalls.set(channelId, toolCalls);
+    } catch (error) {
+      console.error("Error handling large tool operations:", error);
+    }
   }
 
   /**
