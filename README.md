@@ -81,7 +81,7 @@ cd claude-code-discord
 # Install dependencies
 bun install
 
-# Install Whisper for local audio transcription (optional)
+# Install Whisper for local audio transcription (required for audio features)
 pip install openai-whisper
 ```
 

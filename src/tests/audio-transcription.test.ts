@@ -139,20 +139,27 @@ describe('AudioTranscriptionService', () => {
       const testAudioPath = path.join(tempDir, 'test.mp3');
       fs.writeFileSync(testAudioPath, Buffer.from('fake audio data'));
 
-      // Mock the whisper transcription function
-      const mockWhisper = vi.fn().mockResolvedValue({
-        segments: [
-          {
-            start: 0,
-            end: 5,
-            text: 'Hello world, this is a test transcription.'
+      // Mock child_process spawn
+      const mockSpawn = vi.fn().mockReturnValue({
+        stdout: {
+          on: vi.fn((event, callback) => {
+            if (event === 'data') {
+              setTimeout(() => callback('{"text": "Hello world, this is a test transcription."}\n'), 10);
+            }
+          })
+        },
+        stderr: {
+          on: vi.fn()
+        },
+        on: vi.fn((event, callback) => {
+          if (event === 'close') {
+            setTimeout(() => callback(0), 20);
           }
-        ]
+        })
       });
 
-      // Mock dynamic import of whisper
-      vi.doMock('nodejs-whisper', () => ({
-        nodewhisper: mockWhisper
+      vi.doMock('child_process', () => ({
+        spawn: mockSpawn
       }));
 
       const result = await service.transcribeAudio(testAudioPath);
@@ -164,15 +171,31 @@ describe('AudioTranscriptionService', () => {
       const testAudioPath = path.join(tempDir, 'invalid.mp3');
       fs.writeFileSync(testAudioPath, Buffer.from('invalid audio data'));
 
-      // Mock whisper to throw an error
-      const mockWhisper = vi.fn().mockRejectedValue(new Error('Invalid audio format'));
+      // Mock child_process spawn to fail
+      const mockSpawn = vi.fn().mockReturnValue({
+        stdout: {
+          on: vi.fn()
+        },
+        stderr: {
+          on: vi.fn((event, callback) => {
+            if (event === 'data') {
+              setTimeout(() => callback('Invalid audio format'), 10);
+            }
+          })
+        },
+        on: vi.fn((event, callback) => {
+          if (event === 'close') {
+            setTimeout(() => callback(1), 20); // Non-zero exit code
+          }
+        })
+      });
 
-      vi.doMock('nodejs-whisper', () => ({
-        nodewhisper: mockWhisper
+      vi.doMock('child_process', () => ({
+        spawn: mockSpawn
       }));
 
       await expect(service.transcribeAudio(testAudioPath))
-        .rejects.toThrow('Transcription failed: Invalid audio format');
+        .rejects.toThrow('Transcription failed: Whisper process failed (code 1): Invalid audio format');
     });
   });
 
@@ -217,13 +240,27 @@ describe('AudioTranscriptionService', () => {
         arrayBuffer: () => Promise.resolve(new ArrayBuffer(1024))
       });
 
-      // Mock whisper transcription
-      const mockWhisper = vi.fn().mockResolvedValue({
-        segments: [{ text: 'Transcribed voice message' }]
+      // Mock child_process spawn for transcription
+      const mockSpawn = vi.fn().mockReturnValue({
+        stdout: {
+          on: vi.fn((event, callback) => {
+            if (event === 'data') {
+              setTimeout(() => callback('{"text": "Transcribed voice message"}\n'), 10);
+            }
+          })
+        },
+        stderr: {
+          on: vi.fn()
+        },
+        on: vi.fn((event, callback) => {
+          if (event === 'close') {
+            setTimeout(() => callback(0), 20);
+          }
+        })
       });
 
-      vi.doMock('nodejs-whisper', () => ({
-        nodewhisper: mockWhisper
+      vi.doMock('child_process', () => ({
+        spawn: mockSpawn
       }));
 
       const result = await service.processAudioMessage(mockMessage as any);

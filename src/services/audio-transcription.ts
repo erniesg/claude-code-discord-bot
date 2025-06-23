@@ -6,6 +6,7 @@ export class AudioTranscriptionService {
   private readonly tempDir: string;
   private readonly maxFileSize: number = 25 * 1024 * 1024; // 25MB Discord limit
   private readonly supportedFormats = ['audio/mp3', 'audio/wav', 'audio/ogg', 'audio/m4a', 'audio/mpeg'];
+  private modelDownloaded: boolean = false;
 
   constructor() {
     this.tempDir = path.join(process.cwd(), 'temp', 'audio');
@@ -71,42 +72,64 @@ export class AudioTranscriptionService {
   }
 
   /**
-   * Transcribe audio file using local Whisper model
+   * Transcribe audio file using local Python Whisper (uses existing downloaded models)
    */
   async transcribeAudio(audioFilePath: string): Promise<string> {
     try {
-      // Use nodejs-whisper for local transcription
-      const nodewhisper = await import('nodejs-whisper').then(m => m.nodewhisper);
+      // Use Python Whisper directly since models are already downloaded
+      const { spawn } = await import('child_process');
       
-      if (typeof nodewhisper !== 'function') {
-        throw new Error('nodejs-whisper module not properly loaded');
-      }
-      
-      const options = {
-        modelName: 'base.en', // Use base.en model for faster transcription
-        whisperOptions: {
-          language: 'auto',
-          gen_file_txt: false,
-          gen_file_subtitle: false, 
-          gen_file_vtt: false,
-          word_timestamps: false, // We just need the text
-          output_format: 'json'
-        }
-      };
+      return new Promise<string>((resolve, reject) => {
+        const whisperProcess = spawn('python3', [
+          '-c',
+          `
+import whisper
+import sys
+import json
 
-      const result = await nodewhisper(audioFilePath, options);
-      
-      // Extract text from segments
-      if (result && result.segments && Array.isArray(result.segments)) {
-        return result.segments.map((segment: any) => segment.text).join(' ').trim();
-      }
-      
-      // Fallback for different result format
-      if (typeof result === 'string') {
-        return result.trim();
-      }
-      
-      throw new Error('Unexpected transcription result format');
+model = whisper.load_model("base")
+result = model.transcribe("${audioFilePath}")
+print(json.dumps({"text": result["text"]}))
+          `
+        ]);
+
+        let output = '';
+        let errorOutput = '';
+
+        whisperProcess.stdout.on('data', (data) => {
+          output += data.toString();
+        });
+
+        whisperProcess.stderr.on('data', (data) => {
+          errorOutput += data.toString();
+        });
+
+        whisperProcess.on('close', (code) => {
+          if (code !== 0) {
+            reject(new Error(`Whisper process failed (code ${code}): ${errorOutput}`));
+            return;
+          }
+
+          try {
+            // Parse the JSON output from Python
+            const lines = output.trim().split('\n');
+            const lastLine = lines[lines.length - 1];
+            const result = JSON.parse(lastLine);
+            
+            if (result.text) {
+              resolve(result.text.trim());
+            } else {
+              reject(new Error('No text in transcription result'));
+            }
+          } catch (parseError) {
+            reject(new Error(`Failed to parse transcription result: ${parseError}`));
+          }
+        });
+
+        whisperProcess.on('error', (error) => {
+          reject(new Error(`Failed to start Whisper process: ${error.message}`));
+        });
+      });
       
     } catch (error) {
       throw new Error(`Transcription failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
