@@ -28,7 +28,7 @@ A Discord bot that runs Claude Code sessions on different projects based on Disc
 - **Persistent sessions**: Sessions are maintained per channel and automatically resume
 - **Real-time streaming**: See Claude Code's tool usage and responses as they happen
 - **Activity logging**: Shows up to 20 lines of activity including tool calls with parameters
-- **Audio transcription**: Send voice messages or audio files for hands-free interaction with automatic Whisper.cpp setup
+- **Audio transcription**: Send voice messages or audio files for hands-free interaction with automatic Whisper.cpp setup and format conversion
 - **Slash commands**: Use `/clear` to reset a session
 
 ## Setup Instructions
@@ -81,8 +81,8 @@ cd claude-code-discord
 # Install dependencies
 bun install
 
-# Install Whisper.cpp for local audio transcription (automatic on macOS)
-brew install whisper-cpp
+# Install dependencies for audio transcription (automatic setup on macOS)
+brew install whisper-cpp ffmpeg
 ```
 
 ### 6. Configure Environment Variables
@@ -156,6 +156,25 @@ Bot is ready! Logged in as Claude Code Bot#1234
 Successfully registered application commands.
 ```
 
+## Audio Transcription
+
+The bot supports automatic audio transcription using Whisper.cpp:
+
+### Prerequisites
+- **whisper-cpp**: For speech-to-text transcription (`brew install whisper-cpp`)
+- **ffmpeg**: For audio format conversion (`brew install ffmpeg`)
+
+### Supported Audio Formats
+- Discord voice messages (OGG)
+- MP3, WAV, M4A files
+- Maximum file size: 25MB (Discord limit)
+
+### How It Works
+1. Audio files are automatically converted to 16kHz mono WAV format
+2. Whisper.cpp transcribes the audio using a local model (auto-downloaded)
+3. The transcribed text is sent to Claude Code as a regular prompt
+4. Temporary files are cleaned up after processing
+
 ## Usage
 
 Type any message in a channel that corresponds to a repository folder. The bot will run Claude Code with your message as the prompt and stream the results.
@@ -163,7 +182,7 @@ Type any message in a channel that corresponds to a repository folder. The bot w
 ### Commands
 
 - **Any message**: Runs Claude Code with your message as the prompt
-- **Audio/Voice messages**: Automatically transcribes audio and runs Claude Code with the transcribed text
+- **Audio/Voice messages**: Automatically transcribes audio (OGG, MP3, WAV, M4A) and runs Claude Code with the transcribed text
 - **/clear**: Resets the current channel's session (starts fresh next time)
 
 ### Example
