@@ -483,57 +483,93 @@ export class ClaudeManager {
   /**
    * Process complete JSON messages from Claude Code stream
    */
-  private processCompleteJsonMessages(channelId: string, buffer: string, timeout: any, claude: any): void {
+  private processCompleteJsonMessages(channelId: string, newData: string, timeout: any, claude: any): void {
     const existingBuffer = this.jsonBuffers.get(channelId) || '';
-    const fullBuffer = existingBuffer + buffer;
+    const fullBuffer = existingBuffer + newData;
     
-    const lines = fullBuffer.split('\n');
-    let remainingBuffer = '';
+    // Try to extract complete JSON objects from the buffer
+    let processedData = '';
+    let startIndex = 0;
+    let braceCount = 0;
+    let inString = false;
+    let escaped = false;
     
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (!line) continue;
+    for (let i = 0; i < fullBuffer.length; i++) {
+      const char = fullBuffer[i];
       
-      try {
-        // Try to parse as complete JSON
-        const parsed: SDKMessage = JSON.parse(line);
-        console.log("Parsed message type:", parsed.type);
-        
-        // Successfully parsed - process the message
-        if (parsed.type === "assistant" && parsed.message.content) {
-          this.handleLargeAssistantMessage(channelId, parsed).catch(console.error);
-        } else if (parsed.type === "user" && parsed.message.content) {
-          this.handleToolResultMessage(channelId, parsed).catch(console.error);
-        } else if (parsed.type === "result") {
-          this.handleResultMessage(channelId, parsed).then(() => {
-            clearTimeout(timeout);
-            claude.kill("SIGTERM");
-            this.channelProcesses.delete(channelId);
-          }).catch(console.error);
-        } else if (parsed.type === "system") {
-          console.log("System message:", parsed.subtype);
-          if (parsed.subtype === "init") {
-            this.handleInitMessage(channelId, parsed).catch(console.error);
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      
+      if (char === '\\' && inString) {
+        escaped = true;
+        continue;
+      }
+      
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+      
+      if (!inString) {
+        if (char === '{') {
+          if (braceCount === 0) {
+            startIndex = i;
           }
-          const channelName = this.channelNames.get(channelId) || "default";
-          this.db.setSession(channelId, parsed.session_id, channelName);
-        }
-        
-      } catch (error) {
-        // If this is the last line and it's incomplete, keep it in buffer
-        if (i === lines.length - 1) {
-          remainingBuffer = line;
-          console.log(`Buffering incomplete JSON (${line.length} chars): ${line.substring(0, 100)}...`);
-        } else {
-          // Error parsing a complete line - log it
-          console.error("Error parsing JSON:", error.message);
-          console.log("Problematic line (first 200 chars):", line.substring(0, 200));
+          braceCount++;
+        } else if (char === '}') {
+          braceCount--;
+          if (braceCount === 0) {
+            // Found complete JSON object
+            const jsonStr = fullBuffer.substring(startIndex, i + 1);
+            this.parseAndProcessMessage(channelId, jsonStr, timeout, claude);
+            processedData = fullBuffer.substring(0, i + 1);
+          }
         }
       }
     }
     
-    // Update buffer with any remaining incomplete JSON
+    // Keep unprocessed data in buffer
+    const remainingBuffer = fullBuffer.substring(processedData.length);
     this.jsonBuffers.set(channelId, remainingBuffer);
+    
+    if (remainingBuffer.trim() && remainingBuffer.length > 100) {
+      console.log(`Buffering incomplete JSON (${remainingBuffer.length} chars): ${remainingBuffer.substring(0, 100)}...`);
+    }
+  }
+  
+  /**
+   * Parse and process a complete JSON message
+   */
+  private parseAndProcessMessage(channelId: string, jsonStr: string, timeout: any, claude: any): void {
+    try {
+      const parsed: SDKMessage = JSON.parse(jsonStr);
+      console.log("Parsed message type:", parsed.type);
+      
+      // Process the message
+      if (parsed.type === "assistant" && parsed.message.content) {
+        this.handleLargeAssistantMessage(channelId, parsed).catch(console.error);
+      } else if (parsed.type === "user" && parsed.message.content) {
+        this.handleToolResultMessage(channelId, parsed).catch(console.error);
+      } else if (parsed.type === "result") {
+        this.handleResultMessage(channelId, parsed).then(() => {
+          clearTimeout(timeout);
+          claude.kill("SIGTERM");
+          this.channelProcesses.delete(channelId);
+        }).catch(console.error);
+      } else if (parsed.type === "system") {
+        console.log("System message:", parsed.subtype);
+        if (parsed.subtype === "init") {
+          this.handleInitMessage(channelId, parsed).catch(console.error);
+        }
+        const channelName = this.channelNames.get(channelId) || "default";
+        this.db.setSession(channelId, parsed.session_id, channelName);
+      }
+    } catch (error) {
+      console.error("Error parsing complete JSON:", error.message);
+      console.log("Problematic JSON (first 200 chars):", jsonStr.substring(0, 200));
+    }
   }
 
   /**
@@ -552,10 +588,10 @@ export class ClaudeManager {
       ? parsed.message.content.filter((c: any) => c.type === "tool_use")
       : [];
 
-    // Check for oversized tool operations
+    // Check for oversized tool operations (lower threshold)
     const hasLargeToolContent = toolUses.some((tool: any) => {
       const inputStr = JSON.stringify(tool.input || {});
-      return inputStr.length > 50000; // 50KB threshold for tool input
+      return inputStr.length > 5000; // 5KB threshold - much more realistic
     });
 
     if (hasLargeToolContent) {
@@ -595,7 +631,7 @@ export class ClaudeManager {
       for (const tool of toolUses) {
         const inputSize = JSON.stringify(tool.input || {}).length;
         
-        if (inputSize > 50000) {
+        if (inputSize > 5000) {
           // Generate smart summary for large tool operation
           const toolSummary = this.contentSummarizer.generateToolSummary(
             tool.name,
