@@ -120,12 +120,12 @@ export class AudioTranscriptionService {
     const { spawn } = await import('child_process');
     
     return new Promise<string>((resolve, reject) => {
-      // Check if whisper-cpp is installed
-      const checkProcess = spawn('which', ['whisper-cpp']);
+      // Check if whisper-cli is installed  
+      const checkProcess = spawn('which', ['whisper-cli']);
       
       checkProcess.on('close', (code) => {
         if (code === 0) {
-          resolve('whisper-cpp');
+          resolve('whisper-cli');
           return;
         }
         
@@ -135,7 +135,7 @@ export class AudioTranscriptionService {
         
         installProcess.on('close', (installCode) => {
           if (installCode === 0) {
-            resolve('whisper-cpp');
+            resolve('whisper-cli');
           } else {
             reject(new Error('Failed to install whisper.cpp. Please install manually: brew install whisper-cpp'));
           }
@@ -167,10 +167,10 @@ export class AudioTranscriptionService {
       
       return new Promise<string>((resolve, reject) => {
         const whisperProcess = spawn(whisperCommand, [
-          '-m', modelPath,
-          '-f', audioFilePath,
-          '--output-json',
-          '--print-colors'
+          '--model', modelPath,
+          '--file', audioFilePath,
+          '--no-prints',      // Only output transcription
+          '--no-timestamps'   // Clean text output
         ]);
 
         let output = '';
@@ -191,19 +191,13 @@ export class AudioTranscriptionService {
           }
 
           try {
-            // Extract text from whisper.cpp output
-            // Look for lines that start with text content
-            const lines = output.split('\n');
-            const textLines = lines
-              .filter(line => line.trim() && !line.includes('[') && !line.includes('whisper_'))
-              .map(line => line.trim())
-              .filter(line => line.length > 0);
+            // With --no-prints and --no-timestamps, output should be clean transcription text
+            const transcription = output.trim();
             
-            if (textLines.length > 0) {
-              const transcription = textLines.join(' ').trim();
+            if (transcription && transcription.length > 0) {
               resolve(transcription);
             } else {
-              reject(new Error('No transcription text found in output'));
+              reject(new Error(`No transcription text found. Output: "${output}", Error: "${errorOutput}"`));
             }
           } catch (parseError) {
             reject(new Error(`Failed to parse transcription result: ${parseError}`));
