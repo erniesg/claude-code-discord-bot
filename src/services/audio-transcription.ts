@@ -153,9 +153,48 @@ export class AudioTranscriptionService {
   }
 
   /**
+   * Convert audio file to WAV format using ffmpeg
+   */
+  private async convertToWav(inputPath: string): Promise<string> {
+    const { spawn } = await import('child_process');
+    const outputPath = inputPath.replace(/\.[^.]+$/, '.wav');
+    
+    return new Promise<string>((resolve, reject) => {
+      const ffmpegProcess = spawn('ffmpeg', [
+        '-i', inputPath,
+        '-acodec', 'pcm_s16le',
+        '-ar', '16000',
+        '-ac', '1',
+        '-y', // Overwrite output file
+        outputPath
+      ]);
+
+      let errorOutput = '';
+
+      ffmpegProcess.stderr.on('data', (data) => {
+        errorOutput += data.toString();
+      });
+
+      ffmpegProcess.on('close', (code) => {
+        if (code !== 0) {
+          reject(new Error(`FFmpeg conversion failed (code ${code}): ${errorOutput}`));
+          return;
+        }
+        resolve(outputPath);
+      });
+
+      ffmpegProcess.on('error', (error) => {
+        reject(new Error(`Failed to start FFmpeg: ${error.message}. Please install ffmpeg: brew install ffmpeg`));
+      });
+    });
+  }
+
+  /**
    * Transcribe audio file using local whisper.cpp with automatic model download
    */
   async transcribeAudio(audioFilePath: string): Promise<string> {
+    let wavFilePath: string | null = null;
+    
     try {
       // Ensure whisper.cpp is installed
       const whisperCommand = await this.ensureWhisperCppExists();
@@ -163,12 +202,21 @@ export class AudioTranscriptionService {
       // Ensure model is downloaded
       const modelPath = await this.ensureModelExists();
       
+      // Convert to WAV format if needed
+      if (!audioFilePath.endsWith('.wav')) {
+        console.log('Converting audio to WAV format...');
+        wavFilePath = await this.convertToWav(audioFilePath);
+        console.log(`Converted to WAV: ${wavFilePath}`);
+      } else {
+        wavFilePath = audioFilePath;
+      }
+      
       const { spawn } = await import('child_process');
       
       return new Promise<string>((resolve, reject) => {
         const whisperProcess = spawn(whisperCommand, [
           '--model', modelPath,
-          '--file', audioFilePath,
+          '--file', wavFilePath!,
           '--no-prints',      // Only output transcription
           '--no-timestamps'   // Clean text output
         ]);
@@ -185,6 +233,18 @@ export class AudioTranscriptionService {
         });
 
         whisperProcess.on('close', (code) => {
+          // Clean up WAV file if we created it
+          if (wavFilePath && wavFilePath !== audioFilePath) {
+            try {
+              if (fs.existsSync(wavFilePath)) {
+                fs.unlinkSync(wavFilePath);
+                console.log(`Cleaned up converted WAV file: ${wavFilePath}`);
+              }
+            } catch (cleanupError) {
+              console.error(`Failed to cleanup WAV file: ${cleanupError}`);
+            }
+          }
+          
           if (code !== 0) {
             reject(new Error(`Whisper process failed (code ${code}): ${errorOutput}`));
             return;
@@ -205,11 +265,33 @@ export class AudioTranscriptionService {
         });
 
         whisperProcess.on('error', (error) => {
+          // Clean up WAV file if we created it
+          if (wavFilePath && wavFilePath !== audioFilePath) {
+            try {
+              if (fs.existsSync(wavFilePath)) {
+                fs.unlinkSync(wavFilePath);
+              }
+            } catch (cleanupError) {
+              console.error(`Failed to cleanup WAV file: ${cleanupError}`);
+            }
+          }
+          
           reject(new Error(`Failed to start Whisper process: ${error.message}`));
         });
       });
       
     } catch (error) {
+      // Clean up WAV file if we created it
+      if (wavFilePath && wavFilePath !== audioFilePath) {
+        try {
+          if (fs.existsSync(wavFilePath)) {
+            fs.unlinkSync(wavFilePath);
+          }
+        } catch (cleanupError) {
+          console.error(`Failed to cleanup WAV file: ${cleanupError}`);
+        }
+      }
+      
       throw new Error(`Transcription failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
