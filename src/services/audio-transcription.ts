@@ -250,13 +250,19 @@ export class AudioTranscriptionService {
       const transcription = await this.transcribeAudio(tempFilePath);
       console.log(`Transcription completed: ${transcription.substring(0, 100)}...`);
       
-      return transcription;
-      
-    } finally {
-      // Always cleanup temp file
+      // Cleanup temp file after transcription is complete
       if (tempFilePath) {
         this.cleanupTempFile(tempFilePath);
       }
+      
+      return transcription;
+      
+    } catch (error) {
+      // Cleanup temp file on error
+      if (tempFilePath) {
+        this.cleanupTempFile(tempFilePath);
+      }
+      throw error;
     }
   }
 
