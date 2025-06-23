@@ -6,11 +6,13 @@ import {
 import type { ClaudeManager } from '../claude/manager.js';
 import { CommandHandler } from './commands.js';
 import type { MCPPermissionServer } from '../mcp/server.js';
+import { AudioTranscriptionService } from '../services/audio-transcription.js';
 
 export class DiscordBot {
   public client: Client; // Make public so MCP server can access it
   private commandHandler: CommandHandler;
   private mcpServer?: MCPPermissionServer;
+  private audioTranscription: AudioTranscriptionService;
 
   constructor(
     private claudeManager: ClaudeManager,
@@ -26,6 +28,7 @@ export class DiscordBot {
     });
 
     this.commandHandler = new CommandHandler(claudeManager, allowedUserId);
+    this.audioTranscription = new AudioTranscriptionService();
     this.setupEventHandlers();
   }
 
@@ -118,7 +121,56 @@ export class DiscordBot {
     const sessionId = this.claudeManager.getSessionId(channelId);
 
     console.log(`Received message in channel: ${channelName} (${channelId})`);
-    console.log(`Message content: ${message.content}`);
+    
+    // Check if this is an audio message
+    let messageContent = message.content;
+    if (this.audioTranscription.isAudioMessage(message)) {
+      console.log("Audio message detected, starting transcription...");
+      
+      try {
+        // Send initial processing message
+        const processingEmbed = new EmbedBuilder()
+          .setTitle("🎤 Processing Audio")
+          .setDescription("Transcribing your voice message...")
+          .setColor(0x0099FF);
+        
+        const processingMessage = await message.channel.send({ embeds: [processingEmbed] });
+        
+        // Transcribe the audio
+        const transcription = await this.audioTranscription.processAudioMessage(message);
+        
+        // Update the processing message with transcription
+        const transcribedEmbed = new EmbedBuilder()
+          .setTitle("🎤 Audio Transcribed")
+          .setDescription(`**Transcription:** ${transcription}`)
+          .setColor(0x00FF00);
+        
+        await processingMessage.edit({ embeds: [transcribedEmbed] });
+        
+        // Use transcription as message content
+        messageContent = transcription;
+        console.log(`Transcribed audio: ${transcription}`);
+        
+      } catch (error) {
+        console.error("Audio transcription failed:", error);
+        
+        const errorEmbed = new EmbedBuilder()
+          .setTitle("❌ Transcription Failed")
+          .setDescription(`Failed to transcribe audio: ${error instanceof Error ? error.message : 'Unknown error'}`)
+          .setColor(0xFF0000);
+        
+        await message.channel.send({ embeds: [errorEmbed] });
+        return;
+      }
+    }
+    
+    // If no text content and no transcription, skip
+    if (!messageContent || messageContent.trim() === '') {
+      console.log("No text content to process");
+      return;
+    }
+    
+    console.log(`Message content: ${messageContent}`);
     console.log(`Existing session ID: ${sessionId || "none"}`);
 
     try {
@@ -154,7 +206,7 @@ export class DiscordBot {
 
       // Reserve the channel and run Claude Code
       this.claudeManager.reserveChannel(channelId, sessionId, reply);
-      await this.claudeManager.runClaudeCode(channelId, channelName, message.content, sessionId, discordContext);
+      await this.claudeManager.runClaudeCode(channelId, channelName, messageContent, sessionId, discordContext);
     } catch (error) {
       console.error("Error running Claude Code:", error);
       

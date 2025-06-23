@@ -28,6 +28,7 @@ A Discord bot that runs Claude Code sessions on different projects based on Disc
 - **Persistent sessions**: Sessions are maintained per channel and automatically resume
 - **Real-time streaming**: See Claude Code's tool usage and responses as they happen
 - **Activity logging**: Shows up to 20 lines of activity including tool calls with parameters
+- **Audio transcription**: Send voice messages or audio files for hands-free interaction
 - **Slash commands**: Use `/clear` to reset a session
 
 ## Setup Instructions
@@ -79,6 +80,9 @@ cd claude-code-discord
 
 # Install dependencies
 bun install
+
+# Install Whisper for local audio transcription (optional)
+pip install openai-whisper
 ```
 
 ### 6. Configure Environment Variables
@@ -159,16 +163,30 @@ Type any message in a channel that corresponds to a repository folder. The bot w
 ### Commands
 
 - **Any message**: Runs Claude Code with your message as the prompt
+- **Audio/Voice messages**: Automatically transcribes audio and runs Claude Code with the transcribed text
 - **/clear**: Resets the current channel's session (starts fresh next time)
 
 ### Example
 
+**Text Message:**
 ```
 You: hello
 Bot: 🔧 LS (path: .)
      🔧 Read (file_path: ./package.json)
      Hello! I can see this is a Node.js project. What would you like to work on?
      ✅ Completed (3 turns)
+```
+
+**Voice Message:**
+```
+You: [sends voice message saying "add a new feature for user authentication"]
+Bot: 🎤 Processing Audio
+     🎤 Audio Transcribed
+     Transcription: add a new feature for user authentication
+     🔧 LS (path: .)
+     🔧 Read (file_path: ./package.json)
+     I'll help you add user authentication. Let me first examine your project structure...
+     ✅ Completed (5 turns)
 ```
 
 ## How It Works
