@@ -113,6 +113,19 @@ Organize your repositories under the base folder with names matching your Discor
 
 **Important**: Channel names in Discord should match folder names exactly (Discord will convert spaces to hyphens).
 
+#### Channel Name Mapping
+
+For folders with special characters (like dots) that Discord doesn't allow in channel names, create a `channel-mappings.json` file in the project root:
+
+```json
+{
+  "derivativ-ai": "derivativ.ai",
+  "my-app-v2": "my.app.v2"
+}
+```
+
+This allows you to map Discord channel names to folder names with special characters.
+
 ### 8. Create Discord Channels
 
 In your Discord server, create channels for each repository:

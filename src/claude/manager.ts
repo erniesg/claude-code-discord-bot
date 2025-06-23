@@ -19,11 +19,14 @@ export class ClaudeManager {
       discordMessage: any;
     }
   >();
+  private channelMappings: Record<string, string> = {};
 
   constructor(private baseFolder: string) {
     this.db = new DatabaseManager();
     // Clean up old sessions on startup
     this.db.cleanupOldSessions();
+    // Load channel mappings
+    this.loadChannelMappings();
   }
 
   hasActiveProcess(channelId: string): boolean {
@@ -78,6 +81,28 @@ export class ClaudeManager {
     return this.db.getSession(channelId);
   }
 
+  private loadChannelMappings(): void {
+    const mappingsPath = path.join(process.cwd(), 'channel-mappings.json');
+    if (fs.existsSync(mappingsPath)) {
+      try {
+        const mappings = JSON.parse(fs.readFileSync(mappingsPath, 'utf-8'));
+        this.channelMappings = mappings;
+        console.log('Loaded channel mappings:', this.channelMappings);
+      } catch (error) {
+        console.error('Error loading channel mappings:', error);
+      }
+    }
+  }
+
+  private getFolderName(channelName: string): string {
+    // Check if there's a mapping for this channel
+    if (this.channelMappings[channelName]) {
+      return this.channelMappings[channelName];
+    }
+    // Otherwise use the channel name as-is
+    return channelName;
+  }
+
   async runClaudeCode(
     channelId: string,
     channelName: string,
@@ -87,8 +112,9 @@ export class ClaudeManager {
   ): Promise<void> {
     // Store the channel name for path replacement
     this.channelNames.set(channelId, channelName);
-    const workingDir = path.join(this.baseFolder, channelName);
-    console.log(`Running Claude Code in: ${workingDir}`);
+    const folderName = this.getFolderName(channelName);
+    const workingDir = path.join(this.baseFolder, folderName);
+    console.log(`Running Claude Code in: ${workingDir} (channel: ${channelName}, folder: ${folderName})`);
 
     // Check if working directory exists
     if (!fs.existsSync(workingDir)) {
@@ -310,7 +336,8 @@ export class ClaudeManager {
               // Replace base folder path with relative path
               const channelName = this.channelNames.get(channelId);
               if (channelName) {
-                const basePath = `${this.baseFolder}${channelName}`;
+                const folderName = this.getFolderName(channelName);
+                const basePath = `${this.baseFolder}${folderName}`;
                 if (val === basePath) {
                   val = ".";
                 } else if (val.startsWith(basePath + "/")) {
