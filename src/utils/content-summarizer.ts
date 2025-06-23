@@ -27,13 +27,15 @@ export interface ContentViewOptions {
 }
 
 export class ContentSummarizer {
-  private readonly DEFAULT_MAX_LENGTH = 3500; // Reserve space for Discord formatting
+  private readonly DISCORD_MESSAGE_LIMIT = 4096; // Discord's actual limit
+  private readonly SAFETY_BUFFER = 200; // Buffer for embed formatting and buttons
+  private readonly EFFECTIVE_LIMIT = this.DISCORD_MESSAGE_LIMIT - this.SAFETY_BUFFER; // 3896 chars
   private readonly THREAD_PREFIX = "📄 Full Content: ";
   
   constructor(private options: ContentViewOptions = {
     enableThreadView: true,
     enablePagination: true,
-    maxPreviewLength: 3500
+    maxPreviewLength: 3896 // Use effective limit by default
   }) {}
 
   /**
@@ -55,6 +57,8 @@ export class ContentSummarizer {
       case 'glob':
       case 'grep':
         return this.summarizeSearchOperation(toolName, input, result, isError, maxLength);
+      case 'claude response':
+        return this.summarizeClaudeResponse(input, result, isError, maxLength);
       default:
         return this.summarizeGenericOperation(toolName, input, result, isError, maxLength);
     }
@@ -169,6 +173,32 @@ export class ContentSummarizer {
       summary,
       details: result,
       hasFullContent: result.length > 600
+    };
+  }
+
+  private summarizeClaudeResponse(input: any, result: string, isError: boolean, maxLength: number): ToolSummary {
+    const content = result;
+    const lines = content.split('\n');
+    const wordCount = content.split(/\s+/).length;
+    
+    // Extract first meaningful sentence or paragraph
+    const firstParagraph = lines.find(line => line.trim().length > 20) || lines[0] || '';
+    const preview = firstParagraph.length > 200 
+      ? firstParagraph.substring(0, 200) + '...' 
+      : firstParagraph;
+    
+    const summary = `💬 **Claude Response** (${wordCount} words, ${lines.length} lines)\n${preview}`;
+    
+    return {
+      toolName: 'Claude Response',
+      operation: 'response',
+      summary,
+      details: content,
+      stats: {
+        linesAdded: lines.length,
+        fileSize: `${Math.round(content.length / 1024 * 100) / 100}KB`
+      },
+      hasFullContent: true // Always true for long Claude responses
     };
   }
 

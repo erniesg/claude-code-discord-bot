@@ -322,12 +322,49 @@ export class ClaudeManager {
     try {
       // If there's text content, send an assistant message
       if (content && content.trim()) {
-        const assistantEmbed = new EmbedBuilder()
-          .setTitle("💬 Claude")
-          .setDescription(content)
-          .setColor(0x7289DA); // Discord blurple
-        
-        await channel.send({ embeds: [assistantEmbed] });
+        // Check if content would exceed Discord's embed description limit (4096 chars)
+        if (content.length > 3800) { // Leave buffer for embed formatting
+          // Generate smart summary and create thread/pagination options
+          const toolSummary = this.contentSummarizer.generateToolSummary(
+            'Claude Response',
+            { content: content },
+            content,
+            false
+          );
+          
+          const assistantEmbed = new EmbedBuilder()
+            .setTitle("💬 Claude")
+            .setDescription(toolSummary.summary)
+            .setColor(0x7289DA); // Discord blurple
+
+          // Create content viewing buttons
+          const buttons = this.contentSummarizer.createContentButtons(
+            `claude_${Date.now()}`, // Unique ID for this response
+            true
+          );
+
+          const messagePayload: any = { embeds: [assistantEmbed] };
+          if (buttons) {
+            messagePayload.components = [buttons];
+          }
+
+          const sentMessage = await channel.send(messagePayload);
+          
+          // Store the full content for button interactions
+          const toolId = `claude_${Date.now()}`;
+          this.storeToolSummary(channelId, toolId, {
+            ...toolSummary,
+            details: content // Store full Claude response
+          });
+        } else {
+          // Content fits normally - use existing behavior
+          const assistantEmbed = new EmbedBuilder()
+            .setTitle("💬 Claude")
+            .setDescription(content)
+            .setColor(0x7289DA); // Discord blurple
+          
+          await channel.send({ embeds: [assistantEmbed] });
+        }
       }
       
       // If there are tool uses, send a message for each tool
@@ -401,52 +438,30 @@ export class ClaudeManager {
       const toolCall = toolCalls.get(result.tool_use_id);
       if (toolCall && toolCall.message) {
         try {
-          const isError = result.is_error === true;
-          
-          // Generate smart summary
-          const toolSummary = this.contentSummarizer.generateToolSummary(
-            toolCall.toolName,
-            toolCall.input,
-            result.content,
-            isError
-          );
+          // Get the first line of the result
+          const firstLine = result.content.split('\n')[0].trim();
+          const resultText = firstLine.length > 100 
+            ? firstLine.substring(0, 100) + "..."
+            : firstLine;
           
           // Get the current embed and update it
           const currentEmbed = toolCall.message.embeds[0];
-          const originalDescription = currentEmbed.data.description.replace("⏳", isError ? "❌" : "✅");
+          const originalDescription = currentEmbed.data.description.replace("⏳", "✅");
+          const isError = result.is_error === true;
           
           const updatedEmbed = new EmbedBuilder();
           
           if (isError) {
-            const errorText = result.content.split('\n')[0].trim();
-            const shortError = errorText.length > 100 ? errorText.substring(0, 100) + "..." : errorText;
             updatedEmbed
-              .setDescription(`❌ ${originalDescription.substring(2)}\n*${shortError}*`)
+              .setDescription(`❌ ${originalDescription.substring(2)}\n*${resultText}*`)
               .setColor(0xFF0000); // Red for errors
           } else {
             updatedEmbed
-              .setDescription(`✅ ${originalDescription.substring(2)}\n${toolSummary.summary}`)
+              .setDescription(`${originalDescription}\n*${resultText}*`)
               .setColor(0x00FF00); // Green for completed
           }
 
-          // Create content viewing buttons if there's substantial content
-          const buttons = this.contentSummarizer.createContentButtons(
-            result.tool_use_id, 
-            toolSummary.hasFullContent
-          );
-
-          const updatePayload: any = { embeds: [updatedEmbed] };
-          if (buttons) {
-            updatePayload.components = [buttons];
-          }
-
-          await toolCall.message.edit(updatePayload);
-
-          // Store tool summary for button interactions
-          if (toolSummary.hasFullContent && channel) {
-            // Store in a map for later retrieval when buttons are clicked
-            this.storeToolSummary(channelId, result.tool_use_id, toolSummary);
-          }
+          await toolCall.message.edit({ embeds: [updatedEmbed] });
 
         } catch (error) {
           console.error("Error updating tool result message:", error);
