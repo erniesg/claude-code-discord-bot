@@ -49,7 +49,11 @@ export class DiscordBot {
     });
 
     this.client.on("interactionCreate", async (interaction) => {
-      await this.commandHandler.handleInteraction(interaction);
+      if (interaction.isCommand()) {
+        await this.commandHandler.handleInteraction(interaction);
+      } else if (interaction.isButton()) {
+        await this.handleButtonInteraction(interaction);
+      }
     });
 
     this.client.on("messageCreate", async (message) => {
@@ -86,6 +90,109 @@ export class DiscordBot {
         user.id,
         approved
       );
+    }
+  }
+
+  /**
+   * Handle button interactions for content viewing
+   */
+  private async handleButtonInteraction(interaction: any): Promise<void> {
+    // Only process interactions from the authorized user
+    if (interaction.user.id !== this.allowedUserId) {
+      await interaction.reply({ 
+        content: "You are not authorized to use this bot", 
+        ephemeral: true 
+      });
+      return;
+    }
+
+    const customId = interaction.customId;
+    console.log(`Button interaction: ${customId}`);
+
+    try {
+      // Parse button custom ID: action_toolId or action_toolId_pageNum
+      const parts = customId.split('_');
+      if (parts.length < 2) return;
+
+      const action = parts[0];
+      const toolId = parts[1];
+      const channelId = interaction.channelId;
+
+      if (action === 'thread') {
+        await this.claudeManager.handleContentViewButton(
+          channelId, 
+          toolId, 
+          'thread', 
+          interaction
+        );
+      } else if (action === 'paginate') {
+        await this.claudeManager.handleContentViewButton(
+          channelId, 
+          toolId, 
+          'paginate', 
+          interaction
+        );
+      } else if (action === 'prev' || action === 'next' || action === 'summary') {
+        // Handle pagination navigation
+        await this.handlePaginationButton(interaction, action, toolId, parts[2]);
+      }
+    } catch (error) {
+      console.error("Error handling button interaction:", error);
+      try {
+        await interaction.reply({ 
+          content: "Error processing button interaction", 
+          ephemeral: true 
+        });
+      } catch (replyError) {
+        console.error("Error sending error reply:", replyError);
+      }
+    }
+  }
+
+  /**
+   * Handle pagination button navigation
+   */
+  private async handlePaginationButton(
+    interaction: any, 
+    action: string, 
+    toolId: string, 
+    pageStr?: string
+  ): Promise<void> {
+    const channelId = interaction.channelId;
+    const summary = this.claudeManager.getToolSummary(channelId, toolId);
+    
+    if (!summary) {
+      await interaction.reply({ 
+        content: "Content not found or expired", 
+        ephemeral: true 
+      });
+      return;
+    }
+
+    if (action === 'summary') {
+      // Show summary view
+      const summaryEmbed = new EmbedBuilder()
+        .setTitle(`${summary.toolName} Summary`)
+        .setDescription(summary.summary)
+        .setColor(0x0099FF);
+      
+      if (summary.stats) {
+        const statsText = Object.entries(summary.stats)
+          .filter(([_, value]) => value !== undefined)
+          .map(([key, value]) => `${key}: ${value}`)
+          .join(', ');
+        if (statsText) {
+          summaryEmbed.addFields({ name: 'Stats', value: statsText });
+        }
+      }
+
+      await interaction.reply({ embeds: [summaryEmbed], ephemeral: true });
+    } else {
+      // For now, just acknowledge - full pagination implementation would need more complex state management
+      await interaction.reply({ 
+        content: `Pagination ${action} - Feature coming soon!`, 
+        ephemeral: true 
+      });
     }
   }
 

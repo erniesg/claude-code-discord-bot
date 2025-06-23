@@ -5,11 +5,12 @@ import { EmbedBuilder } from "discord.js";
 import type { SDKMessage } from "../types/index.js";
 import { buildClaudeCommand, type DiscordContext } from "../utils/shell.js";
 import { DatabaseManager } from "../db/database.js";
+import { ContentSummarizer } from "../utils/content-summarizer.js";
 
 export class ClaudeManager {
   private db: DatabaseManager;
   private channelMessages = new Map<string, any>();
-  private channelToolCalls = new Map<string, Map<string, { message: any, toolId: string }>>();
+  private channelToolCalls = new Map<string, Map<string, { message: any, toolId: string, toolName: string, input: any }>>();
   private channelNames = new Map<string, string>();
   private channelProcesses = new Map<
     string,
@@ -20,9 +21,12 @@ export class ClaudeManager {
     }
   >();
   private channelMappings: Record<string, string> = {};
+  private contentSummarizer: ContentSummarizer;
+  private toolSummaries = new Map<string, Map<string, any>>(); // channelId -> toolId -> summary
 
   constructor(private baseFolder: string) {
     this.db = new DatabaseManager();
+    this.contentSummarizer = new ContentSummarizer();
     // Clean up old sessions on startup
     this.db.cleanupOldSessions();
     // Load channel mappings
@@ -48,6 +52,7 @@ export class ClaudeManager {
     this.channelToolCalls.delete(channelId);
     this.channelNames.delete(channelId);
     this.channelProcesses.delete(channelId);
+    this.toolSummaries.delete(channelId);
   }
 
   setDiscordMessage(channelId: string, message: any): void {
@@ -329,6 +334,8 @@ export class ClaudeManager {
       for (const tool of toolUses) {
         let toolMessage = `🔧 ${tool.name}`;
 
+        // Clean and format inputs for display
+        const cleanedInput = { ...tool.input };
         if (tool.input && Object.keys(tool.input).length > 0) {
           const inputs = Object.entries(tool.input)
             .map(([key, value]) => {
@@ -340,9 +347,16 @@ export class ClaudeManager {
                 const basePath = `${this.baseFolder}${folderName}`;
                 if (val === basePath) {
                   val = ".";
+                  cleanedInput[key] = val;
                 } else if (val.startsWith(basePath + "/")) {
                   val = val.replace(basePath + "/", "./");
+                  cleanedInput[key] = val;
                 }
+              }
+              
+              // Truncate long values for display
+              if (val.length > 100) {
+                return `${key}=${val.substring(0, 100)}...`;
               }
               return `${key}=${val}`;
             })
@@ -359,7 +373,9 @@ export class ClaudeManager {
         // Track this tool call message for later updating
         toolCalls.set(tool.id, {
           message: sentMessage,
-          toolId: tool.id
+          toolId: tool.id,
+          toolName: tool.name,
+          input: cleanedInput
         });
       }
 
@@ -379,35 +395,59 @@ export class ClaudeManager {
     if (toolResults.length === 0) return;
 
     const toolCalls = this.channelToolCalls.get(channelId) || new Map();
+    const channel = this.channelMessages.get(channelId)?.channel;
 
     for (const result of toolResults) {
       const toolCall = toolCalls.get(result.tool_use_id);
       if (toolCall && toolCall.message) {
         try {
-          // Get the first line of the result
-          const firstLine = result.content.split('\n')[0].trim();
-          const resultText = firstLine.length > 100 
-            ? firstLine.substring(0, 100) + "..."
-            : firstLine;
+          const isError = result.is_error === true;
+          
+          // Generate smart summary
+          const toolSummary = this.contentSummarizer.generateToolSummary(
+            toolCall.toolName,
+            toolCall.input,
+            result.content,
+            isError
+          );
           
           // Get the current embed and update it
           const currentEmbed = toolCall.message.embeds[0];
-          const originalDescription = currentEmbed.data.description.replace("⏳", "✅");
-          const isError = result.is_error === true;
+          const originalDescription = currentEmbed.data.description.replace("⏳", isError ? "❌" : "✅");
           
           const updatedEmbed = new EmbedBuilder();
           
           if (isError) {
+            const errorText = result.content.split('\n')[0].trim();
+            const shortError = errorText.length > 100 ? errorText.substring(0, 100) + "..." : errorText;
             updatedEmbed
-              .setDescription(`❌ ${originalDescription.substring(2)}\n*${resultText}*`)
+              .setDescription(`❌ ${originalDescription.substring(2)}\n*${shortError}*`)
               .setColor(0xFF0000); // Red for errors
           } else {
             updatedEmbed
-              .setDescription(`${originalDescription}\n*${resultText}*`)
+              .setDescription(`✅ ${originalDescription.substring(2)}\n${toolSummary.summary}`)
               .setColor(0x00FF00); // Green for completed
           }
 
-          await toolCall.message.edit({ embeds: [updatedEmbed] });
+          // Create content viewing buttons if there's substantial content
+          const buttons = this.contentSummarizer.createContentButtons(
+            result.tool_use_id, 
+            toolSummary.hasFullContent
+          );
+
+          const updatePayload: any = { embeds: [updatedEmbed] };
+          if (buttons) {
+            updatePayload.components = [buttons];
+          }
+
+          await toolCall.message.edit(updatePayload);
+
+          // Store tool summary for button interactions
+          if (toolSummary.hasFullContent && channel) {
+            // Store in a map for later retrieval when buttons are clicked
+            this.storeToolSummary(channelId, result.tool_use_id, toolSummary);
+          }
+
         } catch (error) {
           console.error("Error updating tool result message:", error);
         }
@@ -451,6 +491,88 @@ export class ClaudeManager {
     }
 
     console.log("Got result message, cleaning up process tracking");
+  }
+
+  /**
+   * Store tool summary for button interactions
+   */
+  private storeToolSummary(channelId: string, toolId: string, summary: any): void {
+    if (!this.toolSummaries.has(channelId)) {
+      this.toolSummaries.set(channelId, new Map());
+    }
+    this.toolSummaries.get(channelId)!.set(toolId, summary);
+  }
+
+  /**
+   * Get stored tool summary
+   */
+  getToolSummary(channelId: string, toolId: string): any {
+    return this.toolSummaries.get(channelId)?.get(toolId);
+  }
+
+  /**
+   * Handle button interactions for content viewing
+   */
+  async handleContentViewButton(
+    channelId: string, 
+    toolId: string, 
+    action: 'thread' | 'paginate',
+    interaction: any
+  ): Promise<void> {
+    const summary = this.getToolSummary(channelId, toolId);
+    if (!summary) {
+      await interaction.reply({ 
+        content: "Content not found or expired", 
+        ephemeral: true 
+      });
+      return;
+    }
+
+    try {
+      if (action === 'thread') {
+        const thread = await this.contentSummarizer.createContentThread(
+          interaction.channel,
+          summary,
+          toolId
+        );
+        
+        if (thread) {
+          await interaction.reply({ 
+            content: `📄 Full content available in ${thread}`, 
+            ephemeral: true 
+          });
+        } else {
+          await interaction.reply({ 
+            content: "Failed to create thread", 
+            ephemeral: true 
+          });
+        }
+      } else if (action === 'paginate') {
+        const messages = await this.contentSummarizer.createPaginatedView(
+          interaction.channel,
+          summary,
+          toolId
+        );
+        
+        if (messages.length > 0) {
+          await interaction.reply({ 
+            content: `📄 Content displayed in ${messages.length} page${messages.length > 1 ? 's' : ''}`, 
+            ephemeral: true 
+          });
+        } else {
+          await interaction.reply({ 
+            content: "Failed to create paginated view", 
+            ephemeral: true 
+          });
+        }
+      }
+    } catch (error) {
+      console.error("Error handling content view button:", error);
+      await interaction.reply({ 
+        content: "Error displaying content", 
+        ephemeral: true 
+      });
+    }
   }
 
 
