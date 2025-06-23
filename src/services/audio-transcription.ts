@@ -4,18 +4,60 @@ import type { Message, Attachment } from 'discord.js';
 
 export class AudioTranscriptionService {
   private readonly tempDir: string;
+  private readonly modelsDir: string;
   private readonly maxFileSize: number = 25 * 1024 * 1024; // 25MB Discord limit
   private readonly supportedFormats = ['audio/mp3', 'audio/wav', 'audio/ogg', 'audio/m4a', 'audio/mpeg'];
-  private modelDownloaded: boolean = false;
+  private readonly modelName = 'ggml-base.en.bin';
+  private readonly modelUrl = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin';
 
   constructor() {
     this.tempDir = path.join(process.cwd(), 'temp', 'audio');
+    this.modelsDir = path.join(process.cwd(), 'models');
     this.ensureTempDirExists();
+    this.ensureModelsDirExists();
   }
 
   private ensureTempDirExists(): void {
     if (!fs.existsSync(this.tempDir)) {
       fs.mkdirSync(this.tempDir, { recursive: true });
+    }
+  }
+
+  private ensureModelsDirExists(): void {
+    if (!fs.existsSync(this.modelsDir)) {
+      fs.mkdirSync(this.modelsDir, { recursive: true });
+    }
+  }
+
+  /**
+   * Download whisper.cpp model if not exists
+   */
+  private async ensureModelExists(): Promise<string> {
+    const modelPath = path.join(this.modelsDir, this.modelName);
+    
+    if (fs.existsSync(modelPath)) {
+      console.log(`Whisper model already exists: ${modelPath}`);
+      return modelPath;
+    }
+
+    console.log(`Downloading Whisper model from ${this.modelUrl}...`);
+    
+    try {
+      const response = await fetch(this.modelUrl);
+      
+      if (!response.ok) {
+        throw new Error(`Failed to download model: ${response.status} ${response.statusText}`);
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      
+      fs.writeFileSync(modelPath, buffer);
+      console.log(`Whisper model downloaded successfully: ${modelPath}`);
+      
+      return modelPath;
+    } catch (error) {
+      throw new Error(`Failed to download Whisper model: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
@@ -72,25 +114,63 @@ export class AudioTranscriptionService {
   }
 
   /**
-   * Transcribe audio file using local Python Whisper (uses existing downloaded models)
+   * Install whisper.cpp if not available
+   */
+  private async ensureWhisperCppExists(): Promise<string> {
+    const { spawn } = await import('child_process');
+    
+    return new Promise<string>((resolve, reject) => {
+      // Check if whisper-cpp is installed
+      const checkProcess = spawn('which', ['whisper-cpp']);
+      
+      checkProcess.on('close', (code) => {
+        if (code === 0) {
+          resolve('whisper-cpp');
+          return;
+        }
+        
+        // Try to install via Homebrew
+        console.log('Installing whisper.cpp via Homebrew...');
+        const installProcess = spawn('brew', ['install', 'whisper-cpp']);
+        
+        installProcess.on('close', (installCode) => {
+          if (installCode === 0) {
+            resolve('whisper-cpp');
+          } else {
+            reject(new Error('Failed to install whisper.cpp. Please install manually: brew install whisper-cpp'));
+          }
+        });
+        
+        installProcess.on('error', () => {
+          reject(new Error('Failed to install whisper.cpp. Please install manually: brew install whisper-cpp'));
+        });
+      });
+      
+      checkProcess.on('error', () => {
+        reject(new Error('Failed to check whisper.cpp installation'));
+      });
+    });
+  }
+
+  /**
+   * Transcribe audio file using local whisper.cpp with automatic model download
    */
   async transcribeAudio(audioFilePath: string): Promise<string> {
     try {
-      // Use Python Whisper directly since models are already downloaded
+      // Ensure whisper.cpp is installed
+      const whisperCommand = await this.ensureWhisperCppExists();
+      
+      // Ensure model is downloaded
+      const modelPath = await this.ensureModelExists();
+      
       const { spawn } = await import('child_process');
       
       return new Promise<string>((resolve, reject) => {
-        const whisperProcess = spawn('python3', [
-          '-c',
-          `
-import whisper
-import sys
-import json
-
-model = whisper.load_model("base")
-result = model.transcribe("${audioFilePath}")
-print(json.dumps({"text": result["text"]}))
-          `
+        const whisperProcess = spawn(whisperCommand, [
+          '-m', modelPath,
+          '-f', audioFilePath,
+          '--output-json',
+          '--print-colors'
         ]);
 
         let output = '';
@@ -111,15 +191,19 @@ print(json.dumps({"text": result["text"]}))
           }
 
           try {
-            // Parse the JSON output from Python
-            const lines = output.trim().split('\n');
-            const lastLine = lines[lines.length - 1];
-            const result = JSON.parse(lastLine);
+            // Extract text from whisper.cpp output
+            // Look for lines that start with text content
+            const lines = output.split('\n');
+            const textLines = lines
+              .filter(line => line.trim() && !line.includes('[') && !line.includes('whisper_'))
+              .map(line => line.trim())
+              .filter(line => line.length > 0);
             
-            if (result.text) {
-              resolve(result.text.trim());
+            if (textLines.length > 0) {
+              const transcription = textLines.join(' ').trim();
+              resolve(transcription);
             } else {
-              reject(new Error('No text in transcription result'));
+              reject(new Error('No transcription text found in output'));
             }
           } catch (parseError) {
             reject(new Error(`Failed to parse transcription result: ${parseError}`));

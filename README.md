@@ -28,7 +28,7 @@ A Discord bot that runs Claude Code sessions on different projects based on Disc
 - **Persistent sessions**: Sessions are maintained per channel and automatically resume
 - **Real-time streaming**: See Claude Code's tool usage and responses as they happen
 - **Activity logging**: Shows up to 20 lines of activity including tool calls with parameters
-- **Audio transcription**: Send voice messages or audio files for hands-free interaction
+- **Audio transcription**: Send voice messages or audio files for hands-free interaction with automatic Whisper.cpp setup
 - **Slash commands**: Use `/clear` to reset a session
 
 ## Setup Instructions
@@ -81,8 +81,8 @@ cd claude-code-discord
 # Install dependencies
 bun install
 
-# Install Whisper for local audio transcription (required for audio features)
-pip install openai-whisper
+# Install Whisper.cpp for local audio transcription (automatic on macOS)
+brew install whisper-cpp
 ```
 
 ### 6. Configure Environment Variables
