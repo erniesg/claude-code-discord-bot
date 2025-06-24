@@ -5,9 +5,11 @@ import { EmbedBuilder } from "discord.js";
 import type { SDKMessage } from "../types/index.js";
 import { buildClaudeCommand, type DiscordContext } from "../utils/shell.js";
 import { DatabaseManager } from "../db/database.js";
+import { MessageLimitHandler } from "../utils/message-limit-handler/index.js";
 
 export class ClaudeManager {
   private db: DatabaseManager;
+  private messageLimitHandler: MessageLimitHandler;
   private channelMessages = new Map<string, any>();
   private channelToolCalls = new Map<string, Map<string, { message: any, toolId: string }>>();
   private channelNames = new Map<string, string>();
@@ -23,6 +25,7 @@ export class ClaudeManager {
 
   constructor(private baseFolder: string) {
     this.db = new DatabaseManager();
+    this.messageLimitHandler = new MessageLimitHandler();
     // Clean up old sessions on startup
     this.db.cleanupOldSessions();
     // Load channel mappings
@@ -166,7 +169,7 @@ export class ClaudeManager {
           .setDescription("Claude Code took too long to respond (5 minutes)")
           .setColor(0xFFD700); // Yellow for timeout
         
-        channel.send({ embeds: [timeoutEmbed] }).catch(console.error);
+        this.safeChannelSend(channel, { embeds: [timeoutEmbed] }).catch(console.error);
       }
     }, 5 * 60 * 1000); // 5 minutes
 
@@ -233,7 +236,7 @@ export class ClaudeManager {
             .setDescription(`Process exited with code: ${code}`)
             .setColor(0xFF0000); // Red for error
           
-          channel.send({ embeds: [errorEmbed] }).catch(console.error);
+          this.safeChannelSend(channel, { embeds: [errorEmbed] }).catch(console.error);
         }
       }
     });
@@ -255,7 +258,7 @@ export class ClaudeManager {
             .setDescription(stderrOutput.trim())
             .setColor(0xFFA500); // Orange for warnings
           
-          channel.send({ embeds: [warningEmbed] }).catch(console.error);
+          this.safeChannelSend(channel, { embeds: [warningEmbed] }).catch(console.error);
         }
       }
     });
@@ -275,7 +278,7 @@ export class ClaudeManager {
           .setDescription(error.message)
           .setColor(0xFF0000); // Red for errors
         
-        channel.send({ embeds: [processErrorEmbed] }).catch(console.error);
+        this.safeChannelSend(channel, { embeds: [processErrorEmbed] }).catch(console.error);
       }
     });
   }
@@ -290,7 +293,7 @@ export class ClaudeManager {
       .setColor(0x00FF00); // Green for init
     
     try {
-      await channel.send({ embeds: [initEmbed] });
+      await this.safeChannelSend(channel, { embeds: [initEmbed] });
     } catch (error) {
       console.error("Error sending init message:", error);
     }
@@ -322,7 +325,7 @@ export class ClaudeManager {
           .setDescription(content)
           .setColor(0x7289DA); // Discord blurple
         
-        await channel.send({ embeds: [assistantEmbed] });
+        await this.safeChannelSend(channel, { embeds: [assistantEmbed] });
       }
       
       // If there are tool uses, send a message for each tool
@@ -354,7 +357,7 @@ export class ClaudeManager {
           .setDescription(`⏳ ${toolMessage}`)
           .setColor(0x0099FF); // Blue for tool calls
 
-        const sentMessage = await channel.send({ embeds: [toolEmbed] });
+        const sentMessage = await this.safeChannelSend(channel, { embeds: [toolEmbed] });
         
         // Track this tool call message for later updating
         toolCalls.set(tool.id, {
@@ -445,7 +448,7 @@ export class ClaudeManager {
     }
 
     try {
-      await channel.send({ embeds: [resultEmbed] });
+      await this.safeChannelSend(channel, { embeds: [resultEmbed] });
     } catch (error) {
       console.error("Error sending result message:", error);
     }
@@ -454,6 +457,89 @@ export class ClaudeManager {
   }
 
 
+
+  // Safe methods for sending messages with limit handling
+  private async safeChannelSend(channel: any, content: any): Promise<any> {
+    try {
+      // Handle embeds specifically
+      if (content.embeds && content.embeds.length > 0) {
+        for (const embed of content.embeds) {
+          if (embed.data?.description && embed.data.description.length > 4096) {
+            const result = await this.messageLimitHandler.handle(embed.data.description, channel, {
+              preferredMethod: 'summary',
+              fallback: true
+            });
+            
+            if (result.handled) {
+              console.log(`Message limit handled using ${result.method} method`);
+              return null; // Handler already sent the content, no message to return
+            }
+          }
+        }
+      }
+      
+      // If no special handling needed, send normally
+      return await channel.send(content);
+    } catch (error: any) {
+      console.error("Error sending message:", error);
+      
+      // Check if it's a Discord API error related to message limits
+      if (this.isDiscordLimitError(error)) {
+        console.log("Detected Discord limit error, using message limit handler");
+        
+        // Extract the problematic content
+        let problemContent = '';
+        if (content.embeds && content.embeds.length > 0) {
+          problemContent = content.embeds[0].data?.description || JSON.stringify(content.embeds[0]);
+        } else if (typeof content === 'string') {
+          problemContent = content;
+        } else {
+          problemContent = JSON.stringify(content);
+        }
+        
+        try {
+          await this.messageLimitHandler.handle(problemContent, channel, {
+            preferredMethod: 'summary',
+            fallback: true
+          });
+          return null; // Handler sent the content
+        } catch (handlerError) {
+          console.error("Message limit handler also failed:", handlerError);
+          // Last resort: send a simple error message
+          return await this.sendSimpleErrorMessage(channel, "Content too large to display");
+        }
+      } else {
+        // For other errors, just log and optionally send a generic error
+        return await this.sendSimpleErrorMessage(channel, "Failed to send message");
+      }
+    }
+  }
+
+  private isDiscordLimitError(error: any): boolean {
+    const errorString = error.toString().toLowerCase();
+    return (
+      errorString.includes('invalid form body') ||
+      errorString.includes('invalid embed') ||
+      errorString.includes('string value is too long') ||
+      errorString.includes('embed description') ||
+      errorString.includes('4096') ||
+      errorString.includes('lengthlessthanorequal')
+    );
+  }
+
+  private async sendSimpleErrorMessage(channel: any, message: string): Promise<any> {
+    try {
+      const errorEmbed = new EmbedBuilder()
+        .setTitle("⚠️ Display Error")
+        .setDescription(message)
+        .setColor(0xFFA500);
+      
+      return await channel.send({ embeds: [errorEmbed] });
+    } catch (error) {
+      console.error("Failed to send even simple error message:", error);
+      return null;
+    }
+  }
 
   // Clean up resources
   destroy(): void {
